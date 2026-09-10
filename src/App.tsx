@@ -114,6 +114,10 @@ export default function App() {
     return localStorage.getItem(STUDENT_ID_KEY) || '';
   });
 
+  const [adminName, setAdminName] = useState<string>(() => {
+    return localStorage.getItem('maternity_admin_name_v1') || '黎哲瑋 (系統最高管理員)';
+  });
+
   // Modals state
   const [isToolkitOpen, setIsToolkitOpen] = useState(false);
   const [toolkitTab, setToolkitTab] = useState<'calculator' | 'timer' | 'stopwatch' | 'scales' | 'isbar'>('calculator');
@@ -253,9 +257,24 @@ export default function App() {
   };
 
   // User Role Authentication handlers
-  const handleRoleLogin = (name: string, role: UserRole) => {
+  const handleRoleLogin = (name: string, role: UserRole, account?: any) => {
     setCurrentUserRole(role);
-    if (role === 'instructor') {
+    if (role === 'admin') {
+      if (name) {
+        setAdminName(name);
+        try {
+          localStorage.setItem('maternity_admin_name_v1', name);
+        } catch (e) {
+          // ignore
+        }
+      }
+      recordAuditLog(
+        name || '系統最高管理員',
+        role,
+        'USER_LOGIN',
+        `登入身分：全域最高管理員 (${account?.username ? `帳號：${account.username}` : 'admin'})`
+      );
+    } else if (role === 'instructor' || role === 'hn_np') {
       setInstructorName(name || '指導教師');
       updateCurrentRecord((prev) => ({
         ...prev,
@@ -264,14 +283,32 @@ export default function App() {
           instructor: name || prev.internship.instructor || '指導教師',
         },
       }));
+      recordAuditLog(
+        name || '指導教師',
+        role,
+        'USER_LOGIN',
+        `登入身分：${role === 'hn_np' ? '護理長暨臨床專師' : '實習指導教師'} (${account?.username ? `帳號：${account.username}` : 'teacher'})`
+      );
+    } else if (role === 'team_leader' || role === 'student') {
+      if (name) setStudentName(name);
+      if (account?.employeeOrStudentId) {
+        setStudentId(account.employeeOrStudentId);
+      }
+      updateCurrentRecord((prev) => ({
+        ...prev,
+        internship: {
+          ...prev.internship,
+          studentName: name || prev.internship.studentName,
+          studentId: account?.employeeOrStudentId || prev.internship.studentId,
+        },
+      }));
+      recordAuditLog(
+        name || '實習護生',
+        role,
+        'USER_LOGIN',
+        `登入身分：${role === 'team_leader' ? '梯次實習小組長' : '實習護理學生'} (${account?.username ? `帳號：${account.username}` : 'student'})`
+      );
     }
-
-    recordAuditLog(
-      name || (role === 'admin' ? '系統管理員' : '指導教師'),
-      role,
-      'USER_LOGIN',
-      `登入身分：${role === 'admin' ? '全域系統管理員' : '實習指導教師'}`
-    );
   };
 
   const handleLogout = () => {
@@ -926,6 +963,8 @@ export default function App() {
             });
           }}
           currentUserRole={currentUserRole}
+          currentAdminName={adminName}
+          onLogout={handleLogout}
           firebaseStatus={firebaseStatus}
           isFirebaseConnected={isFirebaseConnected}
           primaryDbId={primaryDbId}

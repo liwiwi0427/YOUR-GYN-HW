@@ -40,10 +40,23 @@ import {
   Radio,
   RefreshCw,
   Zap,
-  Cloud
+  Cloud,
+  Eye,
+  EyeOff,
+  Copy
 } from 'lucide-react';
 import { HandoverRecord } from '../types';
 import { BackupSnapshot, downloadBackupSnapshotJson } from '../utils/firebaseBackupService';
+import { 
+  UserAccount, 
+  getUserAccounts, 
+  saveUserAccounts, 
+  addUserAccount, 
+  updateUserAccount, 
+  deleteUserAccount,
+  resetUserAccountsToDefault,
+  DEFAULT_USER_ACCOUNTS
+} from '../utils/userAccounts';
 import { 
   NTP_SERVERS,
   getActiveServerIndex,
@@ -123,7 +136,30 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
   onForceFullSync,
 }) => {
   // Navigation tabs
-  const [activeTab, setActiveTab] = useState<'rbac' | 'roster' | 'units' | 'ntp' | 'logs' | 'database'>('rbac');
+  const [activeTab, setActiveTab] = useState<'rbac' | 'accounts' | 'roster' | 'units' | 'ntp' | 'logs' | 'database'>('rbac');
+
+  // User Accounts Management State
+  const [accounts, setAccounts] = useState<UserAccount[]>(() => getUserAccounts());
+  const [accountSearch, setAccountSearch] = useState<string>('');
+  const [accountRoleFilter, setAccountRoleFilter] = useState<string>('all');
+  const [isCreatingAccount, setIsCreatingAccount] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<UserAccount | null>(null);
+  const [accountForm, setAccountForm] = useState<Partial<UserAccount>>({
+    username: '',
+    password: '',
+    name: '',
+    role: 'instructor',
+    title: '臨床實習指導教師',
+    departmentOrUnit: '5B 婦產科病房',
+    employeeOrStudentId: '',
+    email: '',
+    phone: '',
+    isActive: true,
+    notes: '',
+  });
+  const [showPasswordMap, setShowPasswordMap] = useState<{ [accId: string]: boolean }>({});
+  const [accountFeedbackMsg, setAccountFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // NTP Server Management State
   const [selectedNtpIndex, setSelectedNtpIndex] = useState<number>(() => getActiveServerIndex());
@@ -193,8 +229,11 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Sync logs when tab changes
-  const handleTabChange = (tab: 'rbac' | 'roster' | 'units' | 'ntp' | 'logs' | 'database') => {
+  const handleTabChange = (tab: 'rbac' | 'accounts' | 'roster' | 'units' | 'ntp' | 'logs' | 'database') => {
     setActiveTab(tab);
+    if (tab === 'accounts') {
+      setAccounts(getUserAccounts());
+    }
     if (tab === 'logs') {
       setLogs(getAuditLogs());
     }
@@ -202,6 +241,116 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
       setSelectedNtpIndex(getActiveServerIndex());
       setCurrentTimeSample(getStandardTime().toLocaleString('zh-TW'));
     }
+  };
+
+  // --- User Accounts Handlers ---
+  const handleCopyText = (text: string, key: string) => {
+    try {
+      navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 2000);
+    } catch (e) {
+      console.warn('Failed to copy to clipboard', e);
+    }
+  };
+
+  const handleSaveAccount = () => {
+    const cleanUser = (accountForm.username || '').trim();
+    const cleanPass = (accountForm.password || '').trim();
+    const cleanName = (accountForm.name || '').trim();
+
+    if (!cleanUser || !cleanPass || !cleanName) {
+      setAccountFeedbackMsg({ type: 'error', text: '「登入帳號」、「登入密碼」與「使用者姓名」均為必填項目！' });
+      return;
+    }
+
+    if (editingAccount) {
+      const res = updateUserAccount(editingAccount.id, {
+        username: cleanUser,
+        password: cleanPass,
+        name: cleanName,
+        role: accountForm.role as UserRole,
+        title: accountForm.title || '',
+        departmentOrUnit: accountForm.departmentOrUnit || '',
+        employeeOrStudentId: accountForm.employeeOrStudentId || '',
+        email: accountForm.email || '',
+        phone: accountForm.phone || '',
+        isActive: accountForm.isActive ?? true,
+        notes: accountForm.notes || '',
+      });
+      if (!res.success) {
+        setAccountFeedbackMsg({ type: 'error', text: res.error || '更新帳號資料失敗' });
+        return;
+      }
+      setAccountFeedbackMsg({ type: 'success', text: `帳號「${cleanUser}」資料已更新，新密碼已可真實用於前台登入系統！` });
+    } else {
+      const res = addUserAccount({
+        username: cleanUser,
+        password: cleanPass,
+        name: cleanName,
+        role: (accountForm.role || 'instructor') as UserRole,
+        title: accountForm.title || '',
+        departmentOrUnit: accountForm.departmentOrUnit || '',
+        employeeOrStudentId: accountForm.employeeOrStudentId || '',
+        email: accountForm.email || '',
+        phone: accountForm.phone || '',
+        isActive: accountForm.isActive ?? true,
+        notes: accountForm.notes || '',
+      });
+      if (!res.success) {
+        setAccountFeedbackMsg({ type: 'error', text: res.error || '新增帳號失敗' });
+        return;
+      }
+      setAccountFeedbackMsg({ type: 'success', text: `帳號「${cleanUser}」建立成功！新密碼已立即可登入系統。` });
+    }
+
+    setAccounts(getUserAccounts());
+    setIsCreatingAccount(false);
+    setEditingAccount(null);
+    setAccountForm({
+      username: '',
+      password: '',
+      name: '',
+      role: 'instructor',
+      title: '臨床實習指導教師',
+      departmentOrUnit: '5B 婦產科病房',
+      employeeOrStudentId: '',
+      email: '',
+      phone: '',
+      isActive: true,
+      notes: '',
+    });
+    setTimeout(() => setAccountFeedbackMsg(null), 4000);
+  };
+
+  const handleDeleteAccount = (id: string, username: string) => {
+    if (!window.confirm(`確定要刪除帳號「${username}」嗎？刪除後此帳號將無法登入系統。`)) return;
+    const res = deleteUserAccount(id);
+    if (!res.success) {
+      alert(res.error || '刪除失敗');
+      return;
+    }
+    setAccounts(getUserAccounts());
+    setAccountFeedbackMsg({ type: 'success', text: `帳號「${username}」已刪除。` });
+    setTimeout(() => setAccountFeedbackMsg(null), 3000);
+  };
+
+  const handleToggleAccountActive = (id: string, currentActive: boolean, username: string) => {
+    updateUserAccount(id, { isActive: !currentActive });
+    setAccounts(getUserAccounts());
+    setAccountFeedbackMsg({
+      type: 'success',
+      text: `帳號「${username}」已切換為「${!currentActive ? '啟用中' : '已停用'}」狀態。`
+    });
+    setTimeout(() => setAccountFeedbackMsg(null), 3000);
+  };
+
+  const handleResetDefaultAccounts = () => {
+    if (!window.confirm('確定要還原預設系統帳號嗎？現有自訂帳號將被重置回初始預設名冊。')) return;
+    resetUserAccountsToDefault();
+    setAccounts(getUserAccounts());
+    setAccountFeedbackMsg({ type: 'success', text: '系統帳號已還原為初始示範名冊 (包含 admin, teacher, hn01, leader, student)。' });
+    setTimeout(() => setAccountFeedbackMsg(null), 4000);
   };
 
   // Test single server latency
@@ -369,6 +518,26 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
       };
       updated = [...faculty, newFac];
       logAuditEvent(currentAdminName, 'admin', '名冊維護', `新增指導教師：${newFac.name}`, '建立新教師名冊資料', 'success');
+
+      // Auto-provision a login account if not exists
+      const username = (newFac.facultyNumber || `teacher_${Date.now().toString().slice(-4)}`).toLowerCase();
+      const existingAccounts = getUserAccounts();
+      if (!existingAccounts.some((a) => a.username.toLowerCase() === username)) {
+        addUserAccount({
+          username,
+          password: 'teacher123',
+          name: newFac.name,
+          role: newFac.role,
+          title: newFac.title,
+          departmentOrUnit: newFac.primaryUnit,
+          employeeOrStudentId: newFac.facultyNumber,
+          email: newFac.email,
+          phone: newFac.phone,
+          isActive: true,
+          notes: '由指導師資名冊自動建立登入帳號',
+        });
+        setAccounts(getUserAccounts());
+      }
     }
     setFaculty(updated);
     saveFacultyRoster(updated);
@@ -414,6 +583,24 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
       };
       updated = [...students, newStu];
       logAuditEvent(currentAdminName, 'admin', '名冊維護', `新增實習護生：${newStu.name}`, '建立新學生實習名冊', 'success');
+
+      // Auto-provision a login account if not exists
+      const username = newStu.studentId.trim().toLowerCase();
+      const existingAccounts = getUserAccounts();
+      if (!existingAccounts.some((a) => a.username.toLowerCase() === username)) {
+        addUserAccount({
+          username,
+          password: 'student123',
+          name: newStu.name,
+          role: newStu.isTeamLeader ? 'team_leader' : 'student',
+          title: newStu.isTeamLeader ? '梯次實習小組長' : '實習護理學生',
+          departmentOrUnit: `${newStu.cohort} ${newStu.groupName}`,
+          employeeOrStudentId: newStu.studentId,
+          isActive: true,
+          notes: '由護生實習名冊自動建立登入帳號',
+        });
+        setAccounts(getUserAccounts());
+      }
     }
     setStudents(updated);
     saveStudentRoster(updated);
@@ -447,6 +634,7 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
       units: units,
       faculty: faculty,
       students: students,
+      userAccounts: getUserAccounts(),
       auditLogs: getAuditLogs(),
     };
 
@@ -463,7 +651,7 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
       'admin',
       '資料備份',
       '全系統 JSON 資料庫備份導出',
-      `共導出 ${records.length} 筆交班作業、${units.length} 個單位、${faculty.length} 位教師、${students.length} 位學生。`,
+      `共導出 ${records.length} 筆交班作業、${units.length} 個單位、${faculty.length} 位教師、${students.length} 位學生、${accounts.length} 組系統登入帳號。`,
       'success'
     );
   };
@@ -477,7 +665,7 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
       try {
         const content = event.target?.result as string;
         const parsed = JSON.parse(content);
-        if (parsed.records && Array.isArray(parsed.records)) {
+        if (parsed.records && Array.isArray(parsed.records) && onImportAllRecords) {
           onImportAllRecords(parsed.records);
         }
         if (parsed.rbacMatrix) {
@@ -496,6 +684,10 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
           setStudents(parsed.students);
           saveStudentRoster(parsed.students);
         }
+        if (parsed.userAccounts && Array.isArray(parsed.userAccounts)) {
+          saveUserAccounts(parsed.userAccounts);
+          setAccounts(parsed.userAccounts);
+        }
         logAuditEvent(
           currentAdminName,
           'admin',
@@ -504,7 +696,7 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
           `檔案名稱：${file.name}`,
           'success'
         );
-        alert('全系統資料庫與設定已成功還原！');
+        alert('全系統資料庫、師生名冊與登入帳號密碼已成功還原！');
       } catch (err) {
         console.error('Import failed', err);
         alert('JSON 備份檔案解析失敗，請確認檔案格式是否正確。');
@@ -515,11 +707,13 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
   };
 
   const handleExecuteFactoryReset = () => {
-    onResetToSampleRecords();
+    if (onResetToSampleRecords) onResetToSampleRecords();
     handleResetMatrix();
     handleResetUnits();
     handleResetFaculty();
     handleResetStudents();
+    resetUserAccountsToDefault();
+    setAccounts(getUserAccounts());
     setConfirmFactoryReset(false);
     logAuditEvent(
       currentAdminName,
@@ -642,6 +836,23 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
     }).filter((g) => g.items.length > 0);
   }, [selectedCategoryFilter, rbacSearch]);
 
+  // Filtered User Accounts for Accounts tab
+  const filteredAccounts = useMemo(() => {
+    return accounts.filter((acc) => {
+      const matchesRole = accountRoleFilter === 'all' || acc.role === accountRoleFilter;
+      const search = accountSearch.trim().toLowerCase();
+      if (!search) return matchesRole;
+      const matchesSearch =
+        acc.username.toLowerCase().includes(search) ||
+        acc.name.toLowerCase().includes(search) ||
+        (acc.title && acc.title.toLowerCase().includes(search)) ||
+        (acc.departmentOrUnit && acc.departmentOrUnit.toLowerCase().includes(search)) ||
+        (acc.employeeOrStudentId && acc.employeeOrStudentId.toLowerCase().includes(search)) ||
+        (acc.email && acc.email.toLowerCase().includes(search));
+      return matchesRole && matchesSearch;
+    });
+  }, [accounts, accountSearch, accountRoleFilter]);
+
   if (!isOpen) return null;
 
   return (
@@ -664,7 +875,7 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-purple-200/80">
-                登入身分：{currentAdminName} • 完整管控 5 級權限矩陣、師生自訂名冊、實習單位與資料庫
+                登入身分：{currentAdminName} • 完整管控 5 級權限矩陣、帳號密碼登入、師生自訂名冊、實習單位與資料庫
               </p>
             </div>
           </div>
@@ -697,11 +908,12 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
         <div className="bg-slate-900 px-6 flex items-center gap-2 overflow-x-auto border-b border-slate-800">
           {[
             { id: 'rbac', label: '權限管理', icon: Layers, count: PERMISSION_LIST.length },
-            { id: 'roster', label: '師生管理', icon: Users, count: faculty.length + students.length },
+            { id: 'accounts', label: '帳號管理', icon: KeyRound, count: accounts.length },
+            { id: 'roster', label: '師生名冊', icon: Users, count: faculty.length + students.length },
             { id: 'units', label: '單位管理', icon: Building2, count: units.length },
-            { id: 'ntp', label: 'NTP SERVER', icon: Clock, count: undefined },
-            { id: 'logs', label: 'LOG', icon: History, count: logs.length },
-            { id: 'database', label: 'DB', icon: Database },
+            { id: 'ntp', label: 'NTP 校時', icon: Clock, count: undefined },
+            { id: 'logs', label: '安全日誌', icon: History, count: logs.length },
+            { id: 'database', label: '資料庫中樞', icon: Database },
           ].map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -964,6 +1176,485 @@ export const AdminConsoleModal: React.FC<AdminConsoleModalProps> = ({
                   ))}
                 </tbody>
               </table>
+            </div>
+
+          </div>
+        )}
+
+        {/* TAB: User Accounts Management (真實登入帳號密碼管理) */}
+        {activeTab === 'accounts' && (
+          <div className="flex-1 p-5 sm:p-6 overflow-y-auto bg-slate-50 space-y-5">
+            
+            {/* Accounts Header Card */}
+            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-purple-100 text-purple-800 flex items-center justify-center border border-purple-200 shadow-2xs">
+                    <KeyRound className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                      <span>系統登入帳號與密碼管理 (User Accounts & Authentication)</span>
+                      <span className="bg-emerald-100 text-emerald-800 text-[10px] px-2 py-0.5 rounded-full font-bold border border-emerald-200">
+                        真實可用於登入
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      在此新增、修改或啟用的使用者帳號與密碼，均可即時於前台登入視窗完成身分認證並切換系統權限。
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleResetDefaultAccounts}
+                    className="flex items-center gap-1.5 px-3 py-2 text-slate-600 hover:text-slate-800 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-semibold transition-colors"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>還原預設帳號</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingAccount(null);
+                      setAccountForm({
+                        username: '',
+                        password: '',
+                        name: '',
+                        role: 'instructor',
+                        title: '臨床實習指導教師',
+                        departmentOrUnit: '5B 婦產科病房',
+                        employeeOrStudentId: '',
+                        email: '',
+                        phone: '',
+                        isActive: true,
+                        notes: '',
+                      });
+                      setIsCreatingAccount(true);
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-purple-800 hover:bg-purple-900 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>新增系統帳號</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Feedback Message */}
+              {accountFeedbackMsg && (
+                <div className={`p-3 rounded-xl border text-xs flex items-center gap-2 animate-in fade-in duration-200 ${
+                  accountFeedbackMsg.type === 'success'
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-rose-50 border-rose-200 text-rose-800'
+                }`}>
+                  {accountFeedbackMsg.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  )}
+                  <span className="font-medium">{accountFeedbackMsg.text}</span>
+                </div>
+              )}
+
+              {/* Add / Edit Account Form */}
+              {(isCreatingAccount || editingAccount) && (
+                <div className="bg-purple-50/50 rounded-xl border-2 border-purple-200 p-4 space-y-4 animate-in fade-in zoom-in-98 duration-150">
+                  <div className="flex items-center justify-between border-b border-purple-100 pb-2">
+                    <h4 className="font-bold text-xs text-purple-950 flex items-center gap-2">
+                      <KeyRound className="w-4 h-4 text-purple-700" />
+                      <span>{editingAccount ? `編輯帳號資料：${editingAccount.username}` : '建立全新使用者登入帳號'}</span>
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCreatingAccount(false);
+                        setEditingAccount(null);
+                      }}
+                      className="text-slate-400 hover:text-slate-600 p-1"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        登入帳號 (Username) <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={accountForm.username || ''}
+                        onChange={(e) => setAccountForm({ ...accountForm, username: e.target.value })}
+                        placeholder="例：teacher_lin, admin02, 11231005"
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-medium focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        登入密碼 (Password) <span className="text-rose-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showPasswordMap['form'] ? 'text' : 'password'}
+                          value={accountForm.password || ''}
+                          onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })}
+                          placeholder="請設定登入密碼"
+                          className="w-full pl-3 pr-8 py-1.5 bg-white border border-slate-300 rounded-lg font-mono focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPasswordMap((prev) => ({ ...prev, form: !prev['form'] }))}
+                          className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+                          title={showPasswordMap['form'] ? '隱藏' : '顯示'}
+                        >
+                          {showPasswordMap['form'] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        真實姓名 (Full Name) <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={accountForm.name || ''}
+                        onChange={(e) => setAccountForm({ ...accountForm, name: e.target.value })}
+                        placeholder="例：林思妤 老師、陳美琪"
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg font-medium focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        系統角色等級 (Role) <span className="text-rose-500">*</span>
+                      </label>
+                      <select
+                        value={accountForm.role || 'instructor'}
+                        onChange={(e) => setAccountForm({ ...accountForm, role: e.target.value as UserRole })}
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg font-medium focus:ring-2 focus:ring-purple-500"
+                      >
+                        <option value="admin">全域系統管理員 (Level 3 - 最高權限)</option>
+                        <option value="instructor">實習指導教師 (Level 2 - 雙欄批閱與核章)</option>
+                        <option value="hn_np">護理長 / NP專科護理師 (Level 2.5 - 臨床督導)</option>
+                        <option value="team_leader">梯次實習小組長 (Level 1.5 - 初核協同)</option>
+                        <option value="student">實習護理學生 (Level 1 - 病歷撰寫與實習作業)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        專業職稱 (Title)
+                      </label>
+                      <input
+                        type="text"
+                        value={accountForm.title || ''}
+                        onChange={(e) => setAccountForm({ ...accountForm, title: e.target.value })}
+                        placeholder="例：臨床實習指導教師、病房護理長"
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        負責單位 / 實習梯次
+                      </label>
+                      <input
+                        type="text"
+                        value={accountForm.departmentOrUnit || ''}
+                        onChange={(e) => setAccountForm({ ...accountForm, departmentOrUnit: e.target.value })}
+                        placeholder="例：5B 婦產科病房、產房、產後病房"
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        員工編號 / 學生學號
+                      </label>
+                      <input
+                        type="text"
+                        value={accountForm.employeeOrStudentId || ''}
+                        onChange={(e) => setAccountForm({ ...accountForm, employeeOrStudentId: e.target.value })}
+                        placeholder="例：FAC-01, 11231001"
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        公務信箱 (Email)
+                      </label>
+                      <input
+                        type="email"
+                        value={accountForm.email || ''}
+                        onChange={(e) => setAccountForm({ ...accountForm, email: e.target.value })}
+                        placeholder="user@hospital.edu.tw"
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        聯絡電話 / 分機
+                      </label>
+                      <input
+                        type="text"
+                        value={accountForm.phone || ''}
+                        onChange={(e) => setAccountForm({ ...accountForm, phone: e.target.value })}
+                        placeholder="02-23123456 #5200"
+                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-purple-100">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={accountForm.isActive ?? true}
+                        onChange={(e) => setAccountForm({ ...accountForm, isActive: e.target.checked })}
+                        className="rounded border-slate-300 text-purple-700 focus:ring-purple-500 w-4 h-4"
+                      />
+                      <span className="text-xs font-bold text-slate-700">啟用此帳號 (允許登入系統)</span>
+                    </label>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCreatingAccount(false);
+                          setEditingAccount(null);
+                        }}
+                        className="px-3.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold transition-colors"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveAccount}
+                        className="px-4 py-1.5 bg-purple-800 hover:bg-purple-900 text-white rounded-lg text-xs font-bold transition-colors shadow-xs flex items-center gap-1.5"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>{editingAccount ? '儲存帳號變更' : '確定新增帳號'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Search & Filter Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <div className="relative flex-1 min-w-[220px]">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={accountSearch}
+                    onChange={(e) => setAccountSearch(e.target.value)}
+                    placeholder="搜尋帳號、姓名、單位、學號或信箱..."
+                    className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1 overflow-x-auto pb-1">
+                  {[
+                    { id: 'all', label: '全部角色' },
+                    { id: 'admin', label: '管理員' },
+                    { id: 'instructor', label: '指導教師' },
+                    { id: 'hn_np', label: 'HN/NP' },
+                    { id: 'team_leader', label: '小組長' },
+                    { id: 'student', label: '護生' },
+                  ].map((filter) => (
+                    <button
+                      key={filter.id}
+                      type="button"
+                      onClick={() => setAccountRoleFilter(filter.id)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
+                        accountRoleFilter === filter.id
+                          ? 'bg-purple-800 text-white font-bold shadow-2xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {filter.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Accounts Table */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-100 text-slate-700 border-b border-slate-200 font-bold">
+                      <th className="py-2.5 px-3">帳號 (Username)</th>
+                      <th className="py-2.5 px-3">使用者真實姓名</th>
+                      <th className="py-2.5 px-3">角色等級</th>
+                      <th className="py-2.5 px-3">安全密碼</th>
+                      <th className="py-2.5 px-3">單位 / 梯次</th>
+                      <th className="py-2.5 px-3 text-center">狀態</th>
+                      <th className="py-2.5 px-3 text-right">管理操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredAccounts.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-slate-400">
+                          查無符合條件之系統帳號
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredAccounts.map((acc) => {
+                        const isFormPasswordShown = showPasswordMap[acc.id];
+                        const roleColor =
+                          acc.role === 'admin'
+                            ? 'bg-purple-100 text-purple-800 border-purple-200'
+                            : acc.role === 'instructor'
+                            ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                            : acc.role === 'hn_np'
+                            ? 'bg-amber-100 text-amber-800 border-amber-200'
+                            : acc.role === 'team_leader'
+                            ? 'bg-cyan-100 text-cyan-800 border-cyan-200'
+                            : 'bg-blue-100 text-blue-800 border-blue-200';
+
+                        const roleLabel =
+                          acc.role === 'admin'
+                            ? '全域管理員'
+                            : acc.role === 'instructor'
+                            ? '實習教師'
+                            : acc.role === 'hn_np'
+                            ? 'HN / NP'
+                            : acc.role === 'team_leader'
+                            ? '梯次組長'
+                            : '實習護生';
+
+                        return (
+                          <tr key={acc.id} className="hover:bg-slate-50/70 transition-colors">
+                            {/* Username with Copy */}
+                            <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
+                              <div className="flex items-center gap-1.5">
+                                <span>{acc.username}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyText(acc.username, `user_${acc.id}`)}
+                                  className="text-slate-400 hover:text-slate-600 p-0.5 rounded"
+                                  title="複製帳號"
+                                >
+                                  {copiedKey === `user_${acc.id}` ? (
+                                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  ) : (
+                                    <Copy className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              </div>
+                            </td>
+
+                            {/* Name & Title */}
+                            <td className="py-2.5 px-3">
+                              <div className="font-bold text-slate-900">{acc.name}</div>
+                              {acc.title && <div className="text-[11px] text-slate-500">{acc.title}</div>}
+                              {acc.employeeOrStudentId && (
+                                <div className="text-[10px] text-slate-400 font-mono">編號：{acc.employeeOrStudentId}</div>
+                              )}
+                            </td>
+
+                            {/* Role */}
+                            <td className="py-2.5 px-3">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${roleColor}`}>
+                                {roleLabel}
+                              </span>
+                            </td>
+
+                            {/* Password with View Toggle & Copy */}
+                            <td className="py-2.5 px-3 font-mono">
+                              <div className="flex items-center gap-2">
+                                <span className="text-slate-700 text-xs">
+                                  {isFormPasswordShown ? acc.password : '••••••••'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setShowPasswordMap((prev) => ({ ...prev, [acc.id]: !prev[acc.id] }))
+                                  }
+                                  className="text-slate-400 hover:text-slate-600 p-0.5"
+                                  title={isFormPasswordShown ? '隱藏密碼' : '顯示密碼'}
+                                >
+                                  {isFormPasswordShown ? (
+                                    <EyeOff className="w-3.5 h-3.5 text-indigo-600" />
+                                  ) : (
+                                    <Eye className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyText(acc.password, `pass_${acc.id}`)}
+                                  className="text-slate-400 hover:text-slate-600 p-0.5"
+                                  title="複製密碼"
+                                >
+                                  {copiedKey === `pass_${acc.id}` ? (
+                                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  ) : (
+                                    <Copy className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              </div>
+                            </td>
+
+                            {/* Unit */}
+                            <td className="py-2.5 px-3 text-slate-600">
+                              {acc.departmentOrUnit || '—'}
+                            </td>
+
+                            {/* Active Status Toggle */}
+                            <td className="py-2.5 px-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleAccountActive(acc.id, acc.isActive, acc.username)}
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-colors ${
+                                  acc.isActive
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                    : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'
+                                }`}
+                                title="點擊切換啟用/停用狀態"
+                              >
+                                {acc.isActive ? '啟用中' : '已停用'}
+                              </button>
+                            </td>
+
+                            {/* Actions */}
+                            <td className="py-2.5 px-3 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingAccount(acc);
+                                    setAccountForm({ ...acc });
+                                    setIsCreatingAccount(false);
+                                  }}
+                                  className="p-1 text-slate-600 hover:text-purple-700 hover:bg-purple-50 rounded transition-colors"
+                                  title="編輯帳號與修改密碼"
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteAccount(acc.id, acc.username)}
+                                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                                  title="刪除帳號"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
           </div>

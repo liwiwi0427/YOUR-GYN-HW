@@ -3,6 +3,7 @@
 // Plaintext credentials do NOT appear in the source code.
 
 import { UserRole } from './rbac';
+import { authenticateWithUserAccounts, UserAccount } from './userAccounts';
 
 const SALT = 'maternity_nursing_salt_2026_nis';
 
@@ -110,13 +111,15 @@ export interface AuthResult {
   role?: UserRole;
   name?: string;
   error?: string;
+  account?: UserAccount;
 }
 
 /**
- * Authenticates user credentials via cryptographic hash and decrypts verified identity profile.
+ * Authenticates user credentials against the dynamic database accounts first,
+ * then falls back to legacy cryptographic hash validation.
  */
 export async function authenticateCredentials(
-  selectedRole: 'instructor' | 'admin',
+  selectedRole: 'instructor' | 'admin' | UserRole,
   accountInput: string,
   passwordInput: string
 ): Promise<AuthResult> {
@@ -130,34 +133,90 @@ export async function authenticateCredentials(
     return { success: false, error: '請輸入安全密碼' };
   }
 
+  // 1. First priority: Check newly created accounts from Admin Console
+  const dynamicAuth = authenticateWithUserAccounts(cleanAccount, cleanPass, selectedRole as UserRole);
+  if (dynamicAuth.success) {
+    return {
+      success: true,
+      role: dynamicAuth.role,
+      name: dynamicAuth.name,
+      account: dynamicAuth.account,
+    };
+  }
+
+  // If dynamic authentication returned a specific error other than "查無此帳號", respect it (e.g. wrong password or disabled)
+  if (dynamicAuth.error && !dynamicAuth.error.startsWith('查無此帳號')) {
+    return {
+      success: false,
+      error: dynamicAuth.error,
+    };
+  }
+
+  // 2. Second priority: Fallback to pre-configured cryptographic hash credentials for legacy accounts
   try {
     const computedHash = await computeAuthHash(selectedRole, cleanAccount, cleanPass);
     const matchedRecord = SECURE_CREDENTIAL_STORE.find(
       (entry) => entry.role === selectedRole && entry.authHash === computedHash
     );
 
-    if (!matchedRecord) {
+    if (matchedRecord) {
+      // Decrypt profile name with key derived from valid credentials
+      const decryptedName = await decryptProfileName(cleanAccount, cleanPass, matchedRecord.encryptedProfile);
+      const finalName = decryptedName || (selectedRole === 'admin' ? '系統最高管理員' : '臨床實習指導教師');
+
       return {
-        success: false,
-        error: selectedRole === 'admin' 
-          ? '管理員帳號或密碼驗證失敗，請確認後重新輸入。' 
-          : '指導教師帳號或密碼驗證失敗，請確認後重新輸入。',
+        success: true,
+        role: selectedRole as UserRole,
+        name: finalName,
       };
     }
+  } catch (e) {
+    console.warn('Fallback hash authentication error', e);
+  }
 
-    // Decrypt profile name with key derived from valid credentials
-    const decryptedName = await decryptProfileName(cleanAccount, cleanPass, matchedRecord.encryptedProfile);
-    const finalName = decryptedName || (selectedRole === 'admin' ? '系統管理員' : '指導教師');
+  // If neither matched
+  return {
+    success: false,
+    error: dynamicAuth.error || (selectedRole === 'admin' 
+      ? '管理員帳號或密碼驗證失敗，請確認後重新輸入。' 
+      : '指導教師帳號或密碼驗證失敗，請確認後重新輸入。'),
+  };
+}
 
+/**
+ * Universal authentication: Authenticates any username and password
+ * without pre-selecting a role, automatically granting the user's registered role.
+ */
+export async function authenticateAnyCredentials(
+  accountInput: string,
+  passwordInput: string
+): Promise<AuthResult> {
+  const cleanAccount = accountInput.trim();
+  const cleanPass = passwordInput.trim();
+
+  if (!cleanAccount) return { success: false, error: '請輸入認證帳號' };
+  if (!cleanPass) return { success: false, error: '請輸入安全密碼' };
+
+  // Check dynamic accounts without targetRole restriction
+  const dynamicAuth = authenticateWithUserAccounts(cleanAccount, cleanPass);
+  if (dynamicAuth.success) {
     return {
       success: true,
-      role: selectedRole,
-      name: finalName,
-    };
-  } catch (e) {
-    return {
-      success: false,
-      error: '驗證模組執行異常，請稍後重試。',
+      role: dynamicAuth.role,
+      name: dynamicAuth.name,
+      account: dynamicAuth.account,
     };
   }
+
+  // Fallback to testing legacy admin & instructor hashes
+  const adminTest = await authenticateCredentials('admin', cleanAccount, cleanPass);
+  if (adminTest.success) return adminTest;
+
+  const instructorTest = await authenticateCredentials('instructor', cleanAccount, cleanPass);
+  if (instructorTest.success) return instructorTest;
+
+  return {
+    success: false,
+    error: dynamicAuth.error || '帳號或密碼錯誤，請重新確認。',
+  };
 }
