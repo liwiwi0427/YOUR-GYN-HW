@@ -357,15 +357,6 @@ export const TeacherLoginModal: React.FC<TeacherLoginModalProps> = ({
                   <label className="block text-xs font-bold text-slate-700">
                     認證登入帳號 <span className="text-rose-500">*</span>
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => setShowQuickAccounts(!showQuickAccounts)}
-                    className="text-[11px] text-indigo-600 hover:text-indigo-800 flex items-center gap-1 font-medium"
-                  >
-                    <Sparkles className="w-3 h-3 text-indigo-500" />
-                    <span>查看現有帳號 ({availableAccounts.length})</span>
-                    <ChevronDown className={`w-3 h-3 transition-transform ${showQuickAccounts ? 'rotate-180' : ''}`} />
-                  </button>
                 </div>
 
                 <div className="relative">
