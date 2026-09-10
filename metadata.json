@@ -1,0 +1,6 @@
+{
+  "name": "產科護理實習個案交班記錄表",
+  "description": "新生醫護管理專科學校五專產科護理學實習個案交班過程記錄電子化表單，具備各區段臨床小叮嚀筆記（數位版專屬不影響A4列印）、全院國家NTP標準時間同軸校時管理、完整臨床評估、REEDA量表、DART焦點護理記錄、案件保存與標準A4列印排版。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
