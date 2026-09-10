@@ -45,6 +45,7 @@ import { RecordCompletionStats } from '../utils/completionTracker';
 import { CircularProgress } from './CircularProgress';
 import { UserRole, ROLE_DEFINITIONS, hasPermission } from '../utils/rbac';
 import { SyncStatus } from '../hooks/useOfflineSync';
+import { FirebaseSyncStatus } from '../hooks/useFirebaseSync';
 
 export type FormFontSize = 'sm' | 'md' | 'lg' | 'xl';
 
@@ -82,6 +83,14 @@ interface HeaderProps {
   pendingCount?: number;
   isOnline?: boolean;
   onManualSync?: () => void;
+  firebaseStatus?: FirebaseSyncStatus;
+  isFirebaseConnected?: boolean;
+  primaryDbId?: string;
+  backupDbId?: string;
+  nextBackupCountdown?: string;
+  lastBackupTime?: string | null;
+  onTriggerHourlyBackup?: () => void;
+  onForceFullSync?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -118,16 +127,26 @@ export const Header: React.FC<HeaderProps> = ({
   pendingCount = 0,
   isOnline = true,
   onManualSync,
+  firebaseStatus = 'connected',
+  isFirebaseConnected = true,
+  primaryDbId = '604415246583',
+  backupDbId = '378528653721',
+  nextBackupCountdown = '59:59',
+  lastBackupTime,
+  onTriggerHourlyBackup,
+  onForceFullSync,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isToolsDropdownOpen, setIsToolsDropdownOpen] = useState(false);
   const [isFontDropdownOpen, setIsFontDropdownOpen] = useState(false);
   const [isManageDropdownOpen, setIsManageDropdownOpen] = useState(false);
   const [isSyncPopoverOpen, setIsSyncPopoverOpen] = useState(false);
+  const [isFirebasePopoverOpen, setIsFirebasePopoverOpen] = useState(false);
   const toolsMenuRef = useRef<HTMLDivElement>(null);
   const fontMenuRef = useRef<HTMLDivElement>(null);
   const manageMenuRef = useRef<HTMLDivElement>(null);
   const syncPopoverRef = useRef<HTMLDivElement>(null);
+  const firebasePopoverRef = useRef<HTMLDivElement>(null);
 
   // Close dropdowns on click outside
   useEffect(() => {
@@ -143,6 +162,9 @@ export const Header: React.FC<HeaderProps> = ({
       }
       if (syncPopoverRef.current && !syncPopoverRef.current.contains(e.target as Node)) {
         setIsSyncPopoverOpen(false);
+      }
+      if (firebasePopoverRef.current && !firebasePopoverRef.current.contains(e.target as Node)) {
+        setIsFirebasePopoverOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -205,43 +227,42 @@ export const Header: React.FC<HeaderProps> = ({
                 {/* Offline Queue & Live Realtime Sync Status Indicator */}
                 <div className="relative inline-flex items-center" ref={syncPopoverRef}>
                   <button
+                    id="btn-sync-status"
                     type="button"
                     onClick={() => setIsSyncPopoverOpen(!isSyncPopoverOpen)}
-                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold border transition-all ${
+                    className={`inline-flex items-center justify-center w-7 h-7 rounded-full border transition-all ${
                       syncStatus === 'syncing'
-                        ? 'bg-blue-50 text-blue-700 border-blue-300'
-                        : syncStatus === 'offline_queued'
-                        ? 'bg-amber-50 text-amber-800 border-amber-300 shadow-2xs'
+                        ? 'bg-blue-50 text-blue-700 border-blue-300 shadow-2xs'
+                        : syncStatus === 'offline_queued' || pendingCount > 0
+                        ? 'bg-amber-50 text-amber-800 border-amber-300 shadow-2xs hover:bg-amber-100'
                         : !isOnline
                         ? 'bg-slate-100 text-slate-600 border-slate-300'
                         : 'bg-emerald-50 text-emerald-800 border-emerald-300 shadow-2xs hover:bg-emerald-100'
                     }`}
-                    title="點擊檢視 IndexedDB 離線佇列與即時同步狀態"
+                    title={
+                      syncStatus === 'syncing'
+                        ? '同步中... (點擊檢視詳情)'
+                        : pendingCount > 0
+                        ? `IndexedDB 離線佇列：${pendingCount} 筆待同步 (點擊檢視)`
+                        : !isOnline
+                        ? '離線暫存模式 (點擊檢視)'
+                        : 'IndexedDB 實時同步正常 (點擊檢視)'
+                    }
                   >
                     {syncStatus === 'syncing' ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 text-blue-600 animate-spin" />
-                        <span className="text-[11px] font-bold">同步中...</span>
-                      </>
+                      <RefreshCw className="w-3.5 h-3.5 text-blue-600 animate-spin" />
                     ) : syncStatus === 'offline_queued' || pendingCount > 0 ? (
-                      <>
+                      <span className="relative flex items-center justify-center">
                         <Database className="w-3.5 h-3.5 text-amber-600" />
-                        <span className="text-[11px] font-bold">離線佇列 ({pendingCount})</span>
-                        <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-                      </>
+                        <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                      </span>
                     ) : !isOnline ? (
-                      <>
-                        <WifiOff className="w-3.5 h-3.5 text-slate-500" />
-                        <span className="text-[11px] font-bold">離線暫存</span>
-                      </>
+                      <WifiOff className="w-3.5 h-3.5 text-slate-500" />
                     ) : (
-                      <>
-                        <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                        </span>
-                        <span className="text-[11px] font-bold">已即時同步</span>
-                      </>
+                      <span className="relative flex items-center justify-center">
+                        <Database className="w-3.5 h-3.5 text-emerald-600" />
+                        <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      </span>
                     )}
                   </button>
 
@@ -294,6 +315,128 @@ export const Header: React.FC<HeaderProps> = ({
                             <span>{syncStatus === 'syncing' ? '正在同步中...' : '立即同步並廣播給老師'}</span>
                           </button>
                         )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Firebase Dual-Database Realtime Sync & Hourly Backup Indicator */}
+                <div className="relative inline-flex items-center" ref={firebasePopoverRef}>
+                  <button
+                    id="btn-firebase-sync-status"
+                    type="button"
+                    onClick={() => setIsFirebasePopoverOpen(!isFirebasePopoverOpen)}
+                    className={`inline-flex items-center justify-center w-7 h-7 rounded-full border transition-all ${
+                      firebaseStatus === 'syncing'
+                        ? 'bg-sky-50 text-sky-700 border-sky-300 shadow-2xs'
+                        : isFirebaseConnected
+                        ? 'bg-indigo-50 text-indigo-800 border-indigo-300 shadow-2xs hover:bg-indigo-100'
+                        : 'bg-slate-100 text-slate-600 border-slate-300'
+                    }`}
+                    title={`Firebase 雙資料庫 (主庫: ${primaryDbId} | 備份庫: ${backupDbId}，點擊檢視詳情)`}
+                  >
+                    <span className="relative flex items-center justify-center">
+                      <Cloud className={`w-3.5 h-3.5 ${firebaseStatus === 'syncing' ? 'text-sky-600 animate-spin' : isFirebaseConnected ? 'text-indigo-600' : 'text-slate-500'}`} />
+                      {isFirebaseConnected && (
+                        <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                      )}
+                    </span>
+                  </button>
+
+                  {/* Firebase Popover Modal */}
+                  {isFirebasePopoverOpen && (
+                    <div className="absolute left-0 top-full mt-2 w-80 bg-white rounded-xl shadow-xl border border-slate-200 p-3.5 z-50 text-xs">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-2.5">
+                        <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                          <Cloud className="w-4 h-4 text-indigo-600" />
+                          <span>Firebase 雙資料庫實時與備份中樞</span>
+                        </div>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800">
+                          雙庫已掛載
+                        </span>
+                      </div>
+
+                      <div className="space-y-2.5 text-slate-600 text-[11.5px] leading-relaxed">
+                        {/* Primary DB status */}
+                        <div className="bg-indigo-50/70 p-2.5 rounded-lg border border-indigo-200">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-bold text-indigo-900 flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
+                              主資料庫 (實時同步)
+                            </span>
+                            <span className="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-indigo-200 text-indigo-900">
+                              {primaryDbId}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-indigo-750 flex items-center justify-between mt-1">
+                            <span>狀態：{isFirebaseConnected ? '🟢 已連線實時監聽 (onSnapshot)' : '⚪ 連線離線'}</span>
+                            <span className="font-semibold text-indigo-900">{records.length} 筆個案</span>
+                          </div>
+                        </div>
+
+                        {/* Backup DB status */}
+                        <div className="bg-emerald-50/70 p-2.5 rounded-lg border border-emerald-200">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-bold text-emerald-900 flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
+                              備份資料庫 (每小時交互備份)
+                            </span>
+                            <span className="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-emerald-200 text-emerald-900">
+                              {backupDbId}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-emerald-800 flex items-center justify-between mt-1">
+                            <span>排程倒數：<strong className="font-mono text-emerald-900 text-xs">{nextBackupCountdown}</strong></span>
+                            <span className="text-[10px] text-emerald-700 font-mono">
+                              {lastBackupTime ? `上次：${new Date(lastBackupTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '尚未備份'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="pt-1 space-y-1.5">
+                          {onTriggerHourlyBackup && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onTriggerHourlyBackup();
+                                setIsFirebasePopoverOpen(false);
+                              }}
+                              className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs shadow-2xs transition-all"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>立即整理並交互備份至備份資料庫</span>
+                            </button>
+                          )}
+
+                          {onForceFullSync && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onForceFullSync();
+                                setIsFirebasePopoverOpen(false);
+                              }}
+                              className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold text-xs shadow-2xs transition-all"
+                            >
+                              <Cloud className="w-3.5 h-3.5" />
+                              <span>立即全量同步至主資料庫</span>
+                            </button>
+                          )}
+
+                          {onOpenAdminConsole && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onOpenAdminConsole();
+                                setIsFirebasePopoverOpen(false);
+                              }}
+                              className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-semibold text-xs border border-slate-200 transition-all"
+                            >
+                              <Database className="w-3.5 h-3.5 text-slate-600" />
+                              <span>查看備份快照歷程 (管理員後台)</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   )}

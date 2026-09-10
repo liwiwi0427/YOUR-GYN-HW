@@ -1,0 +1,53 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    match /test/connection {
+      allow read, write: if true;
+    }
+
+    match /handover_records/{recordId} {
+      allow read: if isValidId(recordId);
+      allow create, update: if isValidId(recordId) && incoming().id is string;
+      allow delete: if isValidId(recordId);
+    }
+
+    match /faculty/{facultyId} {
+      allow read: if isValidId(facultyId);
+      allow write: if isValidId(facultyId);
+    }
+
+    match /students/{studentId} {
+      allow read: if isValidId(studentId);
+      allow write: if isValidId(studentId);
+    }
+
+    match /clinical_units/{unitId} {
+      allow read: if isValidId(unitId);
+      allow write: if isValidId(unitId);
+    }
+
+    match /audit_logs/{logId} {
+      allow read: if isValidId(logId);
+      allow create: if isValidId(logId);
+      allow update, delete: if false;
+    }
+
+    match /backups/{backupId} {
+      allow read: if isValidId(backupId);
+      allow create, update: if isValidId(backupId);
+      allow delete: if false;
+    }
+  }
+}

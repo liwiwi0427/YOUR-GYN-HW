@@ -1,0 +1,114 @@
+{
+  "entities": {
+    "HandoverRecord": {
+      "title": "HandoverRecord",
+      "description": "產科護理實習個案交班過程記錄電子化表單",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "patientName": { "type": "string", "maxLength": 100 },
+        "chartNumber": { "type": "string", "maxLength": 100 },
+        "bedNumber": { "type": "string", "maxLength": 50 },
+        "studentName": { "type": "string", "maxLength": 100 },
+        "studentId": { "type": "string", "maxLength": 100 },
+        "instructorName": { "type": "string", "maxLength": 100 },
+        "updatedAt": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id"]
+    },
+    "FacultyMember": {
+      "title": "FacultyMember",
+      "description": "指導教師與護理臨床導師名冊",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "role": { "type": "string", "maxLength": 50 },
+        "title": { "type": "string", "maxLength": 100 },
+        "hospital": { "type": "string", "maxLength": 100 },
+        "unit": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id", "name"]
+    },
+    "StudentMember": {
+      "title": "StudentMember",
+      "description": "實習學生名冊",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "studentId": { "type": "string", "maxLength": 100 },
+        "name": { "type": "string", "maxLength": 100 },
+        "cohort": { "type": "string", "maxLength": 100 },
+        "unit": { "type": "string", "maxLength": 100 },
+        "isLeader": { "type": "boolean" }
+      },
+      "required": ["id", "name", "studentId"]
+    },
+    "ClinicalUnit": {
+      "title": "ClinicalUnit",
+      "description": "臨床實習單位清單",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "hospital": { "type": "string", "maxLength": 100 },
+        "code": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "name"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "系統全域稽核軌跡記錄",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "maxLength": 100 },
+        "action": { "type": "string", "maxLength": 100 },
+        "operator": { "type": "string", "maxLength": 100 },
+        "details": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "timestamp", "action"]
+    },
+    "BackupSnapshot": {
+      "title": "BackupSnapshot",
+      "description": "每小時整理交互備份快照",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "maxLength": 100 },
+        "sourceDatabase": { "type": "string", "maxLength": 100 },
+        "targetDatabase": { "type": "string", "maxLength": 100 },
+        "recordsCount": { "type": "number" },
+        "status": { "type": "string", "maxLength": 50 },
+        "checksum": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id", "timestamp", "status"]
+    }
+  },
+  "firestore": {
+    "/handover_records/{recordId}": {
+      "schema": "HandoverRecord",
+      "description": "實時同步之產科個案交班記錄"
+    },
+    "/faculty/{facultyId}": {
+      "schema": "FacultyMember",
+      "description": "教師導師名冊"
+    },
+    "/students/{studentId}": {
+      "schema": "StudentMember",
+      "description": "學生實習名冊"
+    },
+    "/clinical_units/{unitId}": {
+      "schema": "ClinicalUnit",
+      "description": "臨床實習單位"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "系統稽核日誌"
+    },
+    "/backups/{backupId}": {
+      "schema": "BackupSnapshot",
+      "description": "每小時交互備份至備份資料庫之備份快照"
+    }
+  }
+}

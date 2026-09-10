@@ -1,0 +1,73 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all (Pillar 1 Global Safety Net)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Health check test path
+    match /test/connection {
+      allow read, write: if true;
+    }
+
+    // Handover Records: Patient handover forms
+    match /handover_records/{recordId} {
+      allow get: if isValidId(recordId);
+      allow list: if true;
+      allow create: if isValidId(recordId) && incoming().id is string && incoming().id.size() <= 128;
+      allow update: if isValidId(recordId) && incoming().id is string && incoming().id.size() <= 128;
+      allow delete: if isValidId(recordId);
+    }
+
+    // Faculty members
+    match /faculty/{facultyId} {
+      allow get: if isValidId(facultyId);
+      allow list: if true;
+      allow write: if isValidId(facultyId) && incoming().name is string;
+    }
+
+    // Student members
+    match /students/{studentId} {
+      allow get: if isValidId(studentId);
+      allow list: if true;
+      allow write: if isValidId(studentId) && incoming().name is string;
+    }
+
+    // Clinical units
+    match /clinical_units/{unitId} {
+      allow get: if isValidId(unitId);
+      allow list: if true;
+      allow write: if isValidId(unitId) && incoming().name is string;
+    }
+
+    // Audit logs (Immutable)
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId);
+      allow list: if true;
+      allow create: if isValidId(logId) && incoming().action is string && incoming().timestamp is string;
+      allow update, delete: if false;
+    }
+
+    // Backup snapshots
+    match /backups/{backupId} {
+      allow get: if isValidId(backupId);
+      allow list: if true;
+      allow create: if isValidId(backupId) && incoming().timestamp is string && incoming().status is string;
+      allow update: if isValidId(backupId) && incoming().status is string;
+      allow delete: if false;
+    }
+  }
+}

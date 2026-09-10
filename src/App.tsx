@@ -27,6 +27,7 @@ import { calculateCompletionStats } from './utils/completionTracker';
 import { realtimeSync } from './utils/realtimeSync';
 import { UserRole, recordAuditLog } from './utils/rbac';
 import { useOfflineSync } from './hooks/useOfflineSync';
+import { useFirebaseSync } from './hooks/useFirebaseSync';
 import { 
   ArrowUp, 
   Printer, 
@@ -145,6 +146,23 @@ export default function App() {
     dismissSyncToast
   } = useOfflineSync(records, setRecords, currentId, currentUserRole);
 
+  // Initialize Firebase Real-time Sync (Primary: 604415246583) & Hourly Consolidated Backup (Backup: 378528653721)
+  const {
+    firebaseStatus,
+    isFirebaseConnected,
+    primaryDbId,
+    backupDbId,
+    lastBackupTime,
+    nextBackupCountdown,
+    backupSnapshots,
+    backupToastMessage,
+    dismissBackupToast,
+    triggerConsolidatedBackup,
+    forceFullSync,
+    syncRecord: syncRecordToFirebase,
+    deleteRecord: deleteRecordFromFirebase,
+  } = useFirebaseSync(records, setRecords, currentId, currentUserRole);
+
   // Save to localStorage
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
@@ -218,6 +236,9 @@ export default function App() {
       if (targetRecord) {
         // Enqueue to IndexedDB offline queue if offline or snapshot
         recordOfflineChange(targetRecord, 'SAVE');
+
+        // Sync to Primary Firebase Firestore (604415246583)
+        syncRecordToFirebase(targetRecord);
 
         // Broadcast live sync to other tabs/teacher view
         realtimeSync.broadcast({
@@ -352,6 +373,8 @@ export default function App() {
     setIsNewPatientModalOpen(false);
     setActiveView('digital');
 
+    // Realtime broadcast & Firebase primary sync
+    syncRecordToFirebase(normalized);
     realtimeSync.broadcast({
       type: 'RECORDS_UPDATED',
       records: updated,
@@ -385,6 +408,7 @@ export default function App() {
     const updated = [dup, ...records];
     setRecords(updated);
     setCurrentId(dup.id);
+    syncRecordToFirebase(dup);
     realtimeSync.broadcast({
       type: 'RECORDS_UPDATED',
       records: updated,
@@ -399,6 +423,7 @@ export default function App() {
     }
     if (window.confirm(`確定要刪除「${currentRecord.basicInfo.patientName || '此個案'}」嗎？`)) {
       recordOfflineDelete(currentId);
+      deleteRecordFromFirebase(currentId);
       const remaining = records.filter((r) => r.id !== currentId);
       setRecords(remaining);
       setCurrentId(remaining[0].id);
@@ -569,6 +594,14 @@ export default function App() {
         pendingCount={pendingCount}
         isOnline={isOnline}
         onManualSync={flushQueueNow}
+        firebaseStatus={firebaseStatus}
+        isFirebaseConnected={isFirebaseConnected}
+        primaryDbId={primaryDbId}
+        backupDbId={backupDbId}
+        nextBackupCountdown={nextBackupCountdown}
+        lastBackupTime={lastBackupTime}
+        onTriggerHourlyBackup={triggerConsolidatedBackup}
+        onForceFullSync={forceFullSync}
       />
 
       {/* Main Content Area */}
@@ -885,6 +918,7 @@ export default function App() {
             if (newRecords.length > 0) {
               setCurrentId(newRecords[0].id);
             }
+            forceFullSync(newRecords);
             realtimeSync.broadcast({
               type: 'RECORDS_UPDATED',
               records: newRecords,
@@ -892,6 +926,15 @@ export default function App() {
             });
           }}
           currentUserRole={currentUserRole}
+          firebaseStatus={firebaseStatus}
+          isFirebaseConnected={isFirebaseConnected}
+          primaryDbId={primaryDbId}
+          backupDbId={backupDbId}
+          lastBackupTime={lastBackupTime}
+          nextBackupCountdown={nextBackupCountdown}
+          backupSnapshots={backupSnapshots}
+          onTriggerHourlyBackup={triggerConsolidatedBackup}
+          onForceFullSync={forceFullSync}
         />
       )}
 
@@ -909,6 +952,23 @@ export default function App() {
             type="button"
             onClick={dismissSyncToast}
             className="text-slate-400 hover:text-white text-sm font-bold ml-2 px-1"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Firebase Hourly Backup Notification Toast */}
+      {backupToastMessage && (
+        <div className="fixed bottom-20 right-5 z-50 max-w-md bg-emerald-950/95 text-white px-4 py-3 rounded-xl shadow-2xl border border-emerald-700 flex items-center justify-between gap-3 text-xs animate-slide-up backdrop-blur-md">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+            <span className="font-medium text-emerald-100">{backupToastMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={dismissBackupToast}
+            className="text-emerald-300 hover:text-white font-bold ml-2 px-1 text-sm transition-colors"
           >
             ✕
           </button>

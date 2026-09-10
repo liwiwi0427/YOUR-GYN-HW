@@ -30,11 +30,27 @@ import {
   ShieldCheck,
   RotateCcw,
   Download,
-  FileCheck2
+  FileCheck2,
+  History,
+  ArrowRight
 } from 'lucide-react';
 import { logAuditEvent, UserRole } from '../utils/rbac';
 import { exportSingleRecordDocx, printRecordsAsPdf } from '../utils/exportDocxPdf';
 import { generateTeacherStampDataUrl } from '../utils/stampGenerator';
+import { compareHandoverRecords, RecordDiffResult, FieldDiff } from '../utils/recordDiff';
+
+const SECTION_NAV_ITEMS = [
+  { id: 'all', label: '全部', sectionName: '' },
+  { id: 'basic', label: '基本資料', sectionName: '基本資料' },
+  { id: 'admission', label: '入院評估', sectionName: '入院評估' },
+  { id: 'delivery', label: '生產過程', sectionName: '生產過程' },
+  { id: 'baby', label: '寶寶情況', sectionName: '寶寶情況' },
+  { id: 'maternal', label: '產後身心', sectionName: '產後身心' },
+  { id: 'wound', label: 'REEDA傷口', sectionName: '傷口REEDA' },
+  { id: 'handover', label: '交班事項', sectionName: '交班事項' },
+  { id: 'dart', label: 'DART記錄', sectionName: 'DART護理記錄' },
+  { id: 'student-sig', label: '學生簽章', sectionName: '' },
+];
 
 interface SplitGradingViewProps {
   record?: HandoverRecord;
@@ -109,6 +125,23 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
   const [activeLeftSection, setActiveLeftSection] = useState<string>('all');
   const leftContentRef = useRef<HTMLDivElement>(null);
 
+  // Difference Highlighting states
+  const [highlightDiff, setHighlightDiff] = useState<boolean>(true);
+  const [selectedCompareRecordId, setSelectedCompareRecordId] = useState<string>('');
+  const [showDiffModal, setShowDiffModal] = useState<boolean>(false);
+  const [switchedFromRecordId, setSwitchedFromRecordId] = useState<string>('');
+  const prevRecordIdRef = useRef<string>(currentId);
+
+  // Automatically track switched-from record when teacher navigates between assignments
+  useEffect(() => {
+    if (prevRecordIdRef.current && prevRecordIdRef.current !== currentId) {
+      setSwitchedFromRecordId(prevRecordIdRef.current);
+      // Automatically keep highlight active on record switch
+      setHighlightDiff(true);
+    }
+    prevRecordIdRef.current = currentId;
+  }, [currentId]);
+
   // Sync internal state when record changes
   useEffect(() => {
     if (record) {
@@ -126,6 +159,139 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
 
   const prevRecord = currentIndex > 0 ? records[currentIndex - 1] : null;
   const nextRecord = currentIndex < records.length - 1 ? records[currentIndex + 1] : null;
+
+  // Determine baseline record for comparison (e.g., previous week or switched record)
+  const baselineRecord = useMemo(() => {
+    if (selectedCompareRecordId) {
+      const found = records.find((r) => r.id === selectedCompareRecordId);
+      if (found && found.id !== record.id) return found;
+    }
+
+    // 1. Same student with different week
+    const currentStudentId = record.internship?.studentId?.trim();
+    const currentStudentName = record.internship?.studentName?.trim();
+    const sameStudentRecord = records.find((r) => {
+      if (r.id === record.id) return false;
+      const matchId = currentStudentId && r.internship?.studentId?.trim() === currentStudentId;
+      const matchName = currentStudentName && r.internship?.studentName?.trim() === currentStudentName;
+      return matchId || matchName;
+    });
+    if (sameStudentRecord) return sameStudentRecord;
+
+    // 2. Previously viewed record before switching
+    if (switchedFromRecordId) {
+      const fromRec = records.find((r) => r.id === switchedFromRecordId);
+      if (fromRec && fromRec.id !== record.id) return fromRec;
+    }
+
+    // 3. Adjacent record (prev or next)
+    return prevRecord || nextRecord || records.find((r) => r.id !== record.id) || null;
+  }, [selectedCompareRecordId, records, record, switchedFromRecordId, prevRecord, nextRecord]);
+
+  // Compute field-by-field differences
+  const diffResult: RecordDiffResult = useMemo(() => {
+    if (!highlightDiff || !baselineRecord || baselineRecord.id === record.id) {
+      return {
+        hasDiff: false,
+        totalChanges: 0,
+        changedKeys: new Set<string>(),
+        diffMap: {},
+        diffList: [],
+      };
+    }
+    return compareHandoverRecords(record, baselineRecord);
+  }, [highlightDiff, record, baselineRecord]);
+
+  const baselineWeek = baselineRecord?.internship?.week || '對照';
+
+  // Helper: check if field has changed
+  const isFieldChanged = (fieldKey: string) => {
+    return Boolean(highlightDiff && diffResult.changedKeys.has(fieldKey));
+  };
+
+  // Helper: render inline field diff summary tag
+  const renderFieldDiff = (fieldKey: string) => {
+    if (!highlightDiff || !diffResult.changedKeys.has(fieldKey)) return null;
+    const diff = diffResult.diffMap[fieldKey];
+    if (!diff) return null;
+    return (
+      <div className="mt-1 text-[10.5px] text-amber-950 bg-amber-100/90 px-2 py-0.5 rounded border border-amber-300 flex items-center gap-1.5 flex-wrap">
+        <span className="font-bold text-amber-900 flex items-center gap-0.5 shrink-0">
+          <Sparkles className="w-2.5 h-2.5 text-amber-600" />
+          第 {baselineWeek} 週原值：
+        </span>
+        <span className="line-through text-slate-500 font-mono shrink-0">
+          {diff.oldValue || '(空白未填)'}
+        </span>
+        <span className="text-amber-800 font-bold shrink-0">→</span>
+        <span className="text-emerald-800 font-bold font-mono">
+          {diff.newValue || '(清空)'}
+        </span>
+      </div>
+    );
+  };
+
+  // Helper: get wrapper highlight class
+  const getHighlightClass = (fieldKey: string, baseClass = '') => {
+    if (highlightDiff && diffResult.changedKeys.has(fieldKey)) {
+      return `${baseClass} ring-2 ring-amber-400 bg-amber-50/80 border-amber-300 rounded-lg p-1.5 transition-all shadow-2xs relative`;
+    }
+    return baseClass;
+  };
+
+  // Helper: render small diff badge
+  const renderDiffBadge = (fieldKey: string) => {
+    if (!highlightDiff || !diffResult.changedKeys.has(fieldKey)) return null;
+    return (
+      <span className="inline-flex items-center gap-0.5 text-[9.5px] font-bold bg-amber-500 text-white px-1.5 py-0.2 rounded-full shadow-2xs ml-1 align-middle">
+        <Sparkles className="w-2.5 h-2.5" /> 修改
+      </span>
+    );
+  };
+
+  // Helper: render side-by-side or stacked text comparison for long narratives (DART, notes, admissionCourse)
+  const renderTextDiffBlock = (fieldKey: string, currentText: string | undefined, defaultPlaceholder: string) => {
+    const isDiff = highlightDiff && diffResult.changedKeys.has(fieldKey);
+    const diff = diffResult.diffMap[fieldKey];
+
+    if (!isDiff || !diff) {
+      return (
+        <p className="text-slate-700 whitespace-pre-wrap">{currentText || defaultPlaceholder}</p>
+      );
+    }
+
+    return (
+      <div className="space-y-2 mt-1">
+        {/* Baseline (previous week) box */}
+        <div className="p-2.5 bg-amber-50/80 rounded-lg border border-amber-300 ring-1 ring-amber-300/50">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold text-amber-900 flex items-center gap-1">
+              <History className="w-3 h-3 text-amber-600" />
+              第 {baselineWeek} 週原始版本：
+            </span>
+            <span className="text-[10px] text-amber-700 bg-amber-200/80 px-1.5 py-0.2 rounded font-medium">前次記錄</span>
+          </div>
+          <p className="text-xs text-amber-950/80 whitespace-pre-wrap leading-relaxed line-through decoration-amber-400/80">
+            {diff.oldValue || '（前次未填寫此項目）'}
+          </p>
+        </div>
+
+        {/* Current (latest week) box */}
+        <div className="p-2.5 bg-emerald-50/90 rounded-lg border-2 border-emerald-500 ring-2 ring-emerald-200 shadow-xs">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold text-emerald-950 flex items-center gap-1">
+              <Sparkles className="w-3 h-3 text-emerald-600" />
+              當前第 {record.internship?.week || '1'} 週修訂/補充版本（最新）：
+            </span>
+            <span className="text-[10px] text-white bg-emerald-600 px-1.5 py-0.2 rounded font-bold shadow-2xs">最新填寫</span>
+          </div>
+          <p className="text-xs text-emerald-950 font-medium whitespace-pre-wrap leading-relaxed">
+            {diff.newValue || '（本週清空）'}
+          </p>
+        </div>
+      </div>
+    );
+  };
 
   // Completion calculation for student's work
   const completionStats = useMemo(() => {
@@ -272,33 +438,62 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
           </div>
         </div>
 
-        {/* Center: Quick Pagination & Assignment Switcher */}
-        <div className="flex items-center gap-2 bg-slate-800/80 border border-slate-700 px-3 py-1 rounded-xl text-xs">
-          <button
-            type="button"
-            disabled={!prevRecord}
-            onClick={() => prevRecord && onSelectRecord(prevRecord.id)}
-            className="p-1 rounded hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent text-slate-200 transition-colors"
-            title="上一份作業"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          
-          <div className="flex items-center gap-1.5 px-1 font-semibold text-slate-200">
-            <span>第 <strong>{currentIndex + 1}</strong> / {records.length} 份</span>
-            <span className="text-slate-500">|</span>
-            <span className="text-emerald-300 font-bold">{studentName}</span>
-            <span className="text-slate-400 text-[11px]">({studentId} - 第{weekNumber}週)</span>
+        {/* Center: Quick Pagination, Assignment Selector & Diff Highlight Toggle */}
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1.5 bg-slate-800/90 border border-slate-700 px-2.5 py-1 rounded-xl text-xs shadow-inner">
+            <button
+              type="button"
+              disabled={!prevRecord}
+              onClick={() => prevRecord && onSelectRecord(prevRecord.id)}
+              className="p-1 rounded hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent text-slate-200 transition-colors"
+              title="上一份作業"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            
+            {/* Quick Record Switcher Select */}
+            <select
+              value={record.id}
+              onChange={(e) => onSelectRecord(e.target.value)}
+              className="bg-slate-900 border border-slate-600 text-slate-200 text-xs rounded-lg px-2 py-1 font-semibold focus:outline-hidden focus:ring-1 focus:ring-emerald-500 cursor-pointer max-w-[200px] sm:max-w-[260px] truncate"
+              title="快速切換評閱的作業記錄"
+            >
+              {records.map((r, idx) => (
+                <option key={r.id} value={r.id}>
+                  {idx + 1}. 第{r.internship?.week || '1'}週 - {r.internship?.studentName || '未命名'} ({r.basicInfo?.bedNumber || '未排床'})
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="button"
+              disabled={!nextRecord}
+              onClick={() => nextRecord && onSelectRecord(nextRecord.id)}
+              className="p-1 rounded hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent text-slate-200 transition-colors"
+              title="下一份作業"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
           </div>
 
+          {/* Highlight Differences Toggle Button */}
           <button
             type="button"
-            disabled={!nextRecord}
-            onClick={() => nextRecord && onSelectRecord(nextRecord.id)}
-            className="p-1 rounded hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent text-slate-200 transition-colors"
-            title="下一份作業"
+            onClick={() => setHighlightDiff(!highlightDiff)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border shadow-xs ${
+              highlightDiff
+                ? 'bg-amber-500/25 text-amber-300 border-amber-400/80 hover:bg-amber-500/35 ring-1 ring-amber-400/40'
+                : 'bg-slate-800/90 text-slate-400 border-slate-700 hover:text-slate-200'
+            }`}
+            title={highlightDiff ? '高亮差異功能已開啟（切換週次時自動醒目標記修改欄位）' : '點擊開啟週次差異高亮標記'}
           >
-            <ChevronRight className="w-4 h-4" />
+            <Sparkles className={`w-3.5 h-3.5 ${highlightDiff ? 'text-amber-400 animate-pulse' : 'text-slate-400'}`} />
+            <span>高亮差異</span>
+            {highlightDiff && diffResult.totalChanges > 0 && (
+              <span className="bg-amber-400 text-slate-950 font-extrabold text-[10px] px-1.5 py-0.2 rounded-full shadow-2xs">
+                {diffResult.totalChanges}
+              </span>
+            )}
           </button>
         </div>
 
@@ -351,44 +546,82 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
         {/* ========================================================================= */}
         <div className="flex-1 lg:w-[62%] flex flex-col h-full border-r border-slate-300 bg-slate-50 overflow-hidden">
           
-          {/* Left Subheader / Quick Anchor Navigation Bar */}
-          <div className="bg-white border-b border-slate-200 px-4 py-2 flex items-center justify-between gap-2 overflow-x-auto shadow-2xs">
-            <div className="flex items-center gap-1.5 min-w-max text-xs">
-              <span className="text-slate-400 font-bold text-[11px] mr-1">快速導覽：</span>
-              {[
-                { id: 'all', label: '全部' },
-                { id: 'intern', label: '實習資料' },
-                { id: 'basic', label: '基本資料' },
-                { id: 'admission', label: '入院評估' },
-                { id: 'delivery', label: '生產過程' },
-                { id: 'baby', label: '寶寶情況' },
-                { id: 'maternal', label: '產後身心' },
-                { id: 'wound', label: 'REEDA傷口' },
-                { id: 'handover', label: '交班事項' },
-                { id: 'dart', label: 'DART記錄' },
-                { id: 'student-sig', label: '學生簽章' },
-              ].map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => scrollToLeftAnchor(item.id)}
-                  className={`px-2 py-1 rounded-md text-xs font-semibold transition-colors ${
-                    activeLeftSection === item.id
-                      ? 'bg-emerald-700 text-white shadow-2xs'
-                      : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
+          {/* Left Subheader / Quick Anchor Navigation Bar & Baseline Comparison */}
+          <div className="bg-white border-b border-slate-200 px-4 py-2 flex flex-col md:flex-row md:items-center justify-between gap-2 shadow-2xs">
+            {/* Quick section anchors with change count indicator */}
+            <div className="flex items-center gap-1.5 min-w-max text-xs overflow-x-auto pb-1 md:pb-0">
+              <span className="text-slate-400 font-bold text-[11px] mr-1">導覽：</span>
+              {SECTION_NAV_ITEMS.map((item) => {
+                const sectionChangeCount = item.sectionName 
+                  ? diffResult.diffList.filter((d) => d.section === item.sectionName).length 
+                  : 0;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => scrollToLeftAnchor(item.id)}
+                    className={`px-2 py-1 rounded-md text-xs font-semibold transition-colors flex items-center gap-1 shrink-0 ${
+                      activeLeftSection === item.id
+                        ? 'bg-emerald-700 text-white shadow-2xs'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                    {highlightDiff && sectionChangeCount > 0 && (
+                      <span className={`text-[9.5px] font-extrabold px-1.5 py-0.2 rounded-full ${
+                        activeLeftSection === item.id 
+                          ? 'bg-amber-400 text-slate-900' 
+                          : 'bg-amber-100 text-amber-900 border border-amber-300'
+                      }`}>
+                        {sectionChangeCount}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
 
-            {/* Student Submission Status Badge */}
-            <div className="flex items-center gap-2 min-w-max">
-              <span className="text-xs text-slate-500 font-medium">作業完成度：</span>
-              <div className="flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
-                <CircularProgress percentage={completionStats.totalPercentage} size={18} strokeWidth={2.5} showText={false} />
-                <span className="text-xs font-bold text-slate-800">{completionStats.totalPercentage}%</span>
+            {/* Baseline comparison selector & Diff summary trigger */}
+            <div className="flex items-center gap-2 text-xs flex-wrap justify-end">
+              {records.length > 1 && (
+                <div className="flex items-center gap-1.5 bg-amber-50/90 border border-amber-300 text-amber-900 px-2 py-1 rounded-lg">
+                  <span className="text-[11px] font-bold text-amber-800 flex items-center gap-1 shrink-0">
+                    <Eye className="w-3 h-3 text-amber-600" />
+                    對照基準：
+                  </span>
+                  <select
+                    value={selectedCompareRecordId || (baselineRecord ? baselineRecord.id : '')}
+                    onChange={(e) => setSelectedCompareRecordId(e.target.value)}
+                    className="text-xs bg-white border border-amber-300 rounded px-1.5 py-0.5 font-medium text-slate-800 focus:outline-hidden focus:ring-1 focus:ring-amber-500 cursor-pointer max-w-[180px] sm:max-w-[220px] truncate"
+                    title="選擇作為差異比對基準的週次或作業記錄"
+                  >
+                    {records
+                      .filter((r) => r.id !== record.id)
+                      .map((r) => (
+                        <option key={r.id} value={r.id}>
+                          第{r.internship?.week || '1'}週 • {r.internship?.studentName || '未命名'} ({r.basicInfo?.bedNumber || '未排床'})
+                        </option>
+                      ))}
+                  </select>
+
+                  {highlightDiff && diffResult.totalChanges > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowDiffModal(true)}
+                      className="ml-1 text-[11px] font-bold text-amber-900 bg-amber-200 hover:bg-amber-300 px-2 py-0.5 rounded transition-colors flex items-center gap-1 cursor-pointer border border-amber-400/60"
+                      title="點擊展開所有修改欄位對照清單"
+                    >
+                      <span>{diffResult.totalChanges} 處修改</span>
+                      <Layers className="w-3 h-3 text-amber-800" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Student Submission Status Badge */}
+              <div className="flex items-center gap-1 bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200">
+                <CircularProgress percentage={completionStats.totalPercentage} size={16} strokeWidth={2.5} showText={false} />
+                <span className="text-xs font-bold text-slate-700">{completionStats.totalPercentage}%</span>
               </div>
             </div>
           </div>
@@ -396,6 +629,54 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
           {/* Left Content Scroll Container */}
           <div ref={leftContentRef} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
             
+            {/* Diff Highlight Notification Banner */}
+            {highlightDiff && baselineRecord && baselineRecord.id !== record.id && (
+              <div className="bg-gradient-to-r from-amber-50 to-amber-100/70 border-l-4 border-amber-500 p-3 rounded-r-xl border border-amber-200 shadow-2xs flex items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-amber-500 text-white rounded-lg shadow-2xs">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="font-bold text-amber-950 flex items-center gap-1.5">
+                      <span>已開啟「跨週次欄位修改高亮」</span>
+                      <span className="bg-amber-200 text-amber-900 font-extrabold px-1.5 py-0.2 rounded text-[10px]">
+                        對照基準：第 {baselineWeek} 週 ({baselineRecord.internship?.studentName || '前次紀錄'})
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-amber-800 mt-0.5">
+                      {diffResult.totalChanges > 0 ? (
+                        <>
+                          共偵測到 <strong className="font-extrabold text-amber-950">{diffResult.totalChanges}</strong> 處欄位修改或補充，已自動以醒目的黃金光暈與前週對照卡片標記。
+                        </>
+                      ) : (
+                        '目前與對照週次的欄位內容完全相符，尚未發現新的數值變更。'
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {diffResult.totalChanges > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowDiffModal(true)}
+                      className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs shadow-2xs transition-colors flex items-center gap-1"
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                      <span>查看明細表</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setHighlightDiff(false)}
+                    className="px-2 py-1 bg-white hover:bg-amber-50 text-amber-800 border border-amber-300 rounded-lg text-xs font-semibold transition-colors"
+                  >
+                    關閉高亮
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Header Banner for Student Case */}
             <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
@@ -405,11 +686,15 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
                   </span>
                   <h3 className="text-base font-bold text-slate-900">{patientName}</h3>
                   <span className="text-xs text-slate-500">（{deliveryMode}）</span>
+                  {renderDiffBadge('basicInfo.patientName')}
+                  {renderDiffBadge('basicInfo.bedNumber')}
                 </div>
                 <div className="text-xs text-slate-600 mt-1 flex flex-wrap items-center gap-3">
                   <span>護生：<strong>{studentName}</strong> ({studentId})</span>
                   <span>單位：<strong>{record.internship?.unit || '5B 婦產科病房'}</strong></span>
-                  <span>實習週次：<strong>第 {weekNumber} 週</strong></span>
+                  <span className="bg-emerald-100 text-emerald-900 px-2 py-0.5 rounded font-bold">
+                    實習週次：第 {weekNumber} 週
+                  </span>
                   <span>實習日期：{record.internship?.date || '-'}</span>
                 </div>
               </div>
@@ -437,43 +722,83 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
                 <h4 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
                   <User className="w-4 h-4 text-blue-600" />
                   <span>一、基本資料與入院主訴</span>
+                  {SECTION_NAV_ITEMS.find((s) => s.id === 'basic') && highlightDiff && (
+                    diffResult.diffList.filter((d) => d.section === '基本資料').length > 0 && (
+                      <span className="bg-amber-100 text-amber-900 border border-amber-300 text-[10.5px] font-bold px-1.5 py-0.2 rounded-full">
+                        {diffResult.diffList.filter((d) => d.section === '基本資料').length} 處修改
+                      </span>
+                    )
+                  )}
                 </h4>
                 <span className="text-[11px] text-slate-400">Basic Demographic & Clinical Information</span>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
-                <div><span className="text-slate-400 block">入院日期時間：</span><strong className="text-slate-800">{record.basicInfo?.admissionDate || '-'}</strong></div>
-                <div><span className="text-slate-400 block">預產日 (EDC)：</span><strong className="text-slate-800">{record.basicInfo?.expectedDeliveryDate || '-'}</strong></div>
-                <div><span className="text-slate-400 block">生產日：</span><strong className="text-slate-800">{record.basicInfo?.deliveryDate || '-'}</strong></div>
-                <div><span className="text-slate-400 block">懷孕週數 (GA)：</span><strong className="text-slate-800">{record.basicInfo?.gestationalWeeks || '-'}</strong></div>
-                <div><span className="text-slate-400 block">生產史 (G/P)：</span><strong className="text-slate-800">{record.basicInfo?.obstetricHistory || '-'}</strong></div>
-                <div><span className="text-slate-400 block">主治醫師 / 主護：</span><strong className="text-slate-800">{record.basicInfo?.attendingPhysician || '-'} / {record.basicInfo?.primaryNurse || '-'}</strong></div>
-              </div>
-
-              <div className="text-xs pt-1 border-t border-slate-100">
-                <span className="text-slate-400 block">主診斷 (Primary Diagnosis)：</span>
-                <div className="p-2 bg-slate-50 rounded-lg text-slate-800 font-semibold mt-0.5">
-                  {record.basicInfo?.primaryDiagnosis || '無填寫'}
+                <div className={getHighlightClass('basicInfo.admissionDate')}>
+                  <span className="text-slate-400 block">入院日期時間：</span>
+                  <strong className="text-slate-800">{record.basicInfo?.admissionDate || '-'}</strong>
+                  {renderFieldDiff('basicInfo.admissionDate')}
+                </div>
+                <div className={getHighlightClass('basicInfo.expectedDeliveryDate')}>
+                  <span className="text-slate-400 block">預產日 (EDC)：</span>
+                  <strong className="text-slate-800">{record.basicInfo?.expectedDeliveryDate || '-'}</strong>
+                  {renderFieldDiff('basicInfo.expectedDeliveryDate')}
+                </div>
+                <div className={getHighlightClass('basicInfo.deliveryDate')}>
+                  <span className="text-slate-400 block">生產日：</span>
+                  <strong className="text-slate-800">{record.basicInfo?.deliveryDate || '-'}</strong>
+                  {renderFieldDiff('basicInfo.deliveryDate')}
+                </div>
+                <div className={getHighlightClass('basicInfo.gestationalWeeks')}>
+                  <span className="text-slate-400 block">懷孕週數 (GA)：</span>
+                  <strong className="text-slate-800">{record.basicInfo?.gestationalWeeks || '-'}</strong>
+                  {renderFieldDiff('basicInfo.gestationalWeeks')}
+                </div>
+                <div className={getHighlightClass('basicInfo.obstetricHistory')}>
+                  <span className="text-slate-400 block">生產史 (G/P)：</span>
+                  <strong className="text-slate-800">{record.basicInfo?.obstetricHistory || '-'}</strong>
+                  {renderFieldDiff('basicInfo.obstetricHistory')}
+                </div>
+                <div className={getHighlightClass('basicInfo.attendingPhysician')}>
+                  <span className="text-slate-400 block">主治醫師 / 主護：</span>
+                  <strong className="text-slate-800">{record.basicInfo?.attendingPhysician || '-'} / {record.basicInfo?.primaryNurse || '-'}</strong>
+                  {renderFieldDiff('basicInfo.attendingPhysician')}
                 </div>
               </div>
 
+              <div className={`text-xs pt-1 border-t border-slate-100 ${getHighlightClass('basicInfo.primaryDiagnosis')}`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 block">主診斷 (Primary Diagnosis)：</span>
+                  {renderDiffBadge('basicInfo.primaryDiagnosis')}
+                </div>
+                <div className="p-2 bg-slate-50 rounded-lg text-slate-800 font-semibold mt-0.5">
+                  {record.basicInfo?.primaryDiagnosis || '無填寫'}
+                </div>
+                {renderFieldDiff('basicInfo.primaryDiagnosis')}
+              </div>
+
               {record.basicInfo?.secondaryDiagnoses?.some((d) => Boolean(d)) && (
-                <div className="text-xs">
-                  <span className="text-slate-400 block">次診斷 (Secondary Diagnoses)：</span>
+                <div className={`text-xs ${getHighlightClass('basicInfo.secondaryDiagnoses')}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400 block">次診斷 (Secondary Diagnoses)：</span>
+                    {renderDiffBadge('basicInfo.secondaryDiagnoses')}
+                  </div>
                   <ul className="list-disc list-inside space-y-0.5 text-slate-700 mt-1 bg-slate-50 p-2 rounded-lg">
                     {record.basicInfo.secondaryDiagnoses.filter(Boolean).map((d, i) => (
                       <li key={i}>{d}</li>
                     ))}
                   </ul>
+                  {renderFieldDiff('basicInfo.secondaryDiagnoses')}
                 </div>
               )}
 
               {record.basicInfo?.admissionCourse && (
-                <div className="text-xs">
-                  <span className="text-slate-400 block">入院經過 (Admission Course)：</span>
-                  <p className="p-2 bg-slate-50 rounded-lg text-slate-700 whitespace-pre-wrap mt-0.5">
-                    {record.basicInfo.admissionCourse}
-                  </p>
+                <div className={`text-xs ${getHighlightClass('basicInfo.admissionCourse')}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-slate-400 block">入院經過 (Admission Course)：</span>
+                    {renderDiffBadge('basicInfo.admissionCourse')}
+                  </div>
+                  {renderTextDiffBlock('basicInfo.admissionCourse', record.basicInfo.admissionCourse, '無入院經過')}
                 </div>
               )}
             </div>
@@ -484,6 +809,13 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
                 <h4 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
                   <Stethoscope className="w-4 h-4 text-emerald-600" />
                   <span>入院護理評估表</span>
+                  {highlightDiff && (
+                    diffResult.diffList.filter((d) => d.section === '入院評估').length > 0 && (
+                      <span className="bg-amber-100 text-amber-900 border border-amber-300 text-[10.5px] font-bold px-1.5 py-0.2 rounded-full">
+                        {diffResult.diffList.filter((d) => d.section === '入院評估').length} 處修改
+                      </span>
+                    )
+                  )}
                 </h4>
                 <span className={`text-[11px] px-2 py-0.5 rounded font-bold ${
                   record.admissionAssessment?.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500'
@@ -495,21 +827,51 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
               {record.admissionAssessment?.enabled ? (
                 <div className="space-y-3 text-xs">
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-2.5 bg-slate-50 rounded-lg">
-                    <div><span className="text-slate-400">身高：</span> <strong>{record.admissionAssessment.height || '-'} cm</strong></div>
-                    <div><span className="text-slate-400">孕前體重：</span> <strong>{record.admissionAssessment.prePregnancyWeight || '-'} kg</strong></div>
-                    <div><span className="text-slate-400">目前體重：</span> <strong>{record.admissionAssessment.currentWeight || '-'} kg</strong></div>
-                    <div><span className="text-slate-400">計算 BMI：</span> <strong className="text-blue-700">{record.admissionAssessment.bmi || '-'}</strong></div>
+                    <div className={getHighlightClass('admissionAssessment.height')}>
+                      <span className="text-slate-400">身高：</span> <strong>{record.admissionAssessment.height || '-'} cm</strong>
+                      {renderFieldDiff('admissionAssessment.height')}
+                    </div>
+                    <div className={getHighlightClass('admissionAssessment.prePregnancyWeight')}>
+                      <span className="text-slate-400">孕前體重：</span> <strong>{record.admissionAssessment.prePregnancyWeight || '-'} kg</strong>
+                      {renderFieldDiff('admissionAssessment.prePregnancyWeight')}
+                    </div>
+                    <div className={getHighlightClass('admissionAssessment.currentWeight')}>
+                      <span className="text-slate-400">目前體重：</span> <strong>{record.admissionAssessment.currentWeight || '-'} kg</strong>
+                      {renderFieldDiff('admissionAssessment.currentWeight')}
+                    </div>
+                    <div className={getHighlightClass('admissionAssessment.bmi')}>
+                      <span className="text-slate-400">計算 BMI：</span> <strong className="text-blue-700">{record.admissionAssessment.bmi || '-'}</strong>
+                      {renderFieldDiff('admissionAssessment.bmi')}
+                    </div>
                   </div>
 
                   <div className="p-2.5 bg-blue-50/50 rounded-lg border border-blue-100">
                     <span className="font-bold text-blue-900 block mb-1">入院生命徵象 (V/S)：</span>
                     <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-                      <div><span className="text-slate-500">T:</span> <strong>{record.admissionAssessment.vitalSigns?.temperature || '-'} °C</strong></div>
-                      <div><span className="text-slate-500">P:</span> <strong>{record.admissionAssessment.vitalSigns?.pulse || '-'} bpm</strong></div>
-                      <div><span className="text-slate-500">R:</span> <strong>{record.admissionAssessment.vitalSigns?.respiration || '-'} bpm</strong></div>
-                      <div><span className="text-slate-500">BP:</span> <strong>{record.admissionAssessment.vitalSigns?.systolicBP || '-'}/{record.admissionAssessment.vitalSigns?.diastolicBP || '-'} mmHg</strong></div>
-                      <div><span className="text-slate-500">SpO2:</span> <strong>{record.admissionAssessment.vitalSigns?.spO2 || '-'}%</strong></div>
-                      <div><span className="text-slate-500">血型:</span> <strong>{record.admissionAssessment.patientBloodType} {record.admissionAssessment.patientRh}</strong></div>
+                      <div className={getHighlightClass('admissionAssessment.vitalSigns.temperature')}>
+                        <span className="text-slate-500">T:</span> <strong>{record.admissionAssessment.vitalSigns?.temperature || '-'} °C</strong>
+                        {renderFieldDiff('admissionAssessment.vitalSigns.temperature')}
+                      </div>
+                      <div className={getHighlightClass('admissionAssessment.vitalSigns.pulse')}>
+                        <span className="text-slate-500">P:</span> <strong>{record.admissionAssessment.vitalSigns?.pulse || '-'} bpm</strong>
+                        {renderFieldDiff('admissionAssessment.vitalSigns.pulse')}
+                      </div>
+                      <div className={getHighlightClass('admissionAssessment.vitalSigns.respiration')}>
+                        <span className="text-slate-500">R:</span> <strong>{record.admissionAssessment.vitalSigns?.respiration || '-'} bpm</strong>
+                        {renderFieldDiff('admissionAssessment.vitalSigns.respiration')}
+                      </div>
+                      <div className={getHighlightClass('admissionAssessment.vitalSigns.bp')}>
+                        <span className="text-slate-500">BP:</span> <strong>{record.admissionAssessment.vitalSigns?.systolicBP || '-'}/{record.admissionAssessment.vitalSigns?.diastolicBP || '-'} mmHg</strong>
+                        {renderFieldDiff('admissionAssessment.vitalSigns.bp')}
+                      </div>
+                      <div className={getHighlightClass('admissionAssessment.vitalSigns.spO2')}>
+                        <span className="text-slate-500">SpO2:</span> <strong>{record.admissionAssessment.vitalSigns?.spO2 || '-'}%</strong>
+                        {renderFieldDiff('admissionAssessment.vitalSigns.spO2')}
+                      </div>
+                      <div className={getHighlightClass('admissionAssessment.bloodType')}>
+                        <span className="text-slate-500">血型:</span> <strong>{record.admissionAssessment.patientBloodType} {record.admissionAssessment.patientRh}</strong>
+                        {renderFieldDiff('admissionAssessment.bloodType')}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -524,28 +886,74 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
                 <h4 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
                   <Activity className="w-4 h-4 text-purple-600" />
                   <span>二、生產過程 (Delivery Process)</span>
+                  {highlightDiff && (
+                    diffResult.diffList.filter((d) => d.section === '生產過程').length > 0 && (
+                      <span className="bg-amber-100 text-amber-900 border border-amber-300 text-[10.5px] font-bold px-1.5 py-0.2 rounded-full">
+                        {diffResult.diffList.filter((d) => d.section === '生產過程').length} 處修改
+                      </span>
+                    )
+                  )}
                 </h4>
                 <span className="text-[11px] text-slate-400">分娩方式、產程耗時與出血量</span>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
-                <div><span className="text-slate-400 block">分娩方式：</span><strong className="text-purple-700">{record.deliveryProcess?.deliveryMode || '-'}</strong></div>
-                <div><span className="text-slate-400 block">胎盤剝離方式：</span><strong className="text-slate-800">{record.deliveryProcess?.placentaExpulsionMode || '-'}</strong></div>
-                <div><span className="text-slate-400 block">會陰裂傷等級：</span><strong className="text-slate-800">{record.deliveryProcess?.perinealLaceration || '-'}</strong></div>
-                <div><span className="text-slate-400 block">娩出時間：</span><strong className="text-slate-800">{record.deliveryProcess?.deliveryTime || '-'}</strong></div>
-                <div><span className="text-slate-400 block">失血量 (EBL)：</span><strong className="text-rose-600">{record.deliveryProcess?.bloodLoss ? `${record.deliveryProcess.bloodLoss} ml` : '-'}</strong></div>
-                <div><span className="text-slate-400 block">胎盤重量：</span><strong className="text-slate-800">{record.deliveryProcess?.placentaWeight ? `${record.deliveryProcess.placentaWeight} g` : '-'}</strong></div>
+                <div className={getHighlightClass('deliveryProcess.deliveryMode')}>
+                  <span className="text-slate-400 block">分娩方式：</span>
+                  <strong className="text-purple-700">{record.deliveryProcess?.deliveryMode || '-'}</strong>
+                  {renderFieldDiff('deliveryProcess.deliveryMode')}
+                </div>
+                <div className={getHighlightClass('deliveryProcess.placentaExpulsionMode')}>
+                  <span className="text-slate-400 block">胎盤剝離方式：</span>
+                  <strong className="text-slate-800">{record.deliveryProcess?.placentaExpulsionMode || '-'}</strong>
+                  {renderFieldDiff('deliveryProcess.placentaExpulsionMode')}
+                </div>
+                <div className={getHighlightClass('deliveryProcess.perinealLaceration')}>
+                  <span className="text-slate-400 block">會陰裂傷等級：</span>
+                  <strong className="text-slate-800">{record.deliveryProcess?.perinealLaceration || '-'}</strong>
+                  {renderFieldDiff('deliveryProcess.perinealLaceration')}
+                </div>
+                <div className={getHighlightClass('deliveryProcess.deliveryTime')}>
+                  <span className="text-slate-400 block">娩出時間：</span>
+                  <strong className="text-slate-800">{record.deliveryProcess?.deliveryTime || '-'}</strong>
+                  {renderFieldDiff('deliveryProcess.deliveryTime')}
+                </div>
+                <div className={getHighlightClass('deliveryProcess.bloodLoss')}>
+                  <span className="text-slate-400 block">失血量 (EBL)：</span>
+                  <strong className="text-rose-600">{record.deliveryProcess?.bloodLoss ? `${record.deliveryProcess.bloodLoss} ml` : '-'}</strong>
+                  {renderFieldDiff('deliveryProcess.bloodLoss')}
+                </div>
+                <div className={getHighlightClass('deliveryProcess.placentaWeight')}>
+                  <span className="text-slate-400 block">胎盤重量：</span>
+                  <strong className="text-slate-800">{record.deliveryProcess?.placentaWeight ? `${record.deliveryProcess.placentaWeight} g` : '-'}</strong>
+                  {renderFieldDiff('deliveryProcess.placentaWeight')}
+                </div>
               </div>
 
               {/* Natural Delivery Stages or Cesarean Timetable */}
               <div className="p-2.5 bg-slate-50 rounded-lg text-xs">
                 <span className="font-bold text-slate-700 block mb-1">產程時間明細：</span>
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                  <div><span className="text-slate-400">第一產程:</span> <strong>{record.deliveryProcess?.naturalDelivery?.stage1Time || '-'}</strong></div>
-                  <div><span className="text-slate-400">第二產程:</span> <strong>{record.deliveryProcess?.naturalDelivery?.stage2Time || '-'}</strong></div>
-                  <div><span className="text-slate-400">第三產程:</span> <strong>{record.deliveryProcess?.naturalDelivery?.stage3Time || '-'}</strong></div>
-                  <div><span className="text-slate-400">第四產程:</span> <strong>{record.deliveryProcess?.naturalDelivery?.stage4Time || '-'}</strong></div>
-                  <div><span className="text-slate-400">總耗時:</span> <strong className="text-blue-700">{record.deliveryProcess?.naturalDelivery?.totalLaborTime || '-'}</strong></div>
+                  <div className={getHighlightClass('deliveryProcess.naturalDelivery.stage1Time')}>
+                    <span className="text-slate-400">第一產程:</span> <strong>{record.deliveryProcess?.naturalDelivery?.stage1Time || '-'}</strong>
+                    {renderFieldDiff('deliveryProcess.naturalDelivery.stage1Time')}
+                  </div>
+                  <div className={getHighlightClass('deliveryProcess.naturalDelivery.stage2Time')}>
+                    <span className="text-slate-400">第二產程:</span> <strong>{record.deliveryProcess?.naturalDelivery?.stage2Time || '-'}</strong>
+                    {renderFieldDiff('deliveryProcess.naturalDelivery.stage2Time')}
+                  </div>
+                  <div className={getHighlightClass('deliveryProcess.naturalDelivery.stage3Time')}>
+                    <span className="text-slate-400">第三產程:</span> <strong>{record.deliveryProcess?.naturalDelivery?.stage3Time || '-'}</strong>
+                    {renderFieldDiff('deliveryProcess.naturalDelivery.stage3Time')}
+                  </div>
+                  <div className={getHighlightClass('deliveryProcess.naturalDelivery.stage4Time')}>
+                    <span className="text-slate-400">第四產程:</span> <strong>{record.deliveryProcess?.naturalDelivery?.stage4Time || '-'}</strong>
+                    {renderFieldDiff('deliveryProcess.naturalDelivery.stage4Time')}
+                  </div>
+                  <div className={getHighlightClass('deliveryProcess.naturalDelivery.totalLaborTime')}>
+                    <span className="text-slate-400">總耗時:</span> <strong className="text-blue-700">{record.deliveryProcess?.naturalDelivery?.totalLaborTime || '-'}</strong>
+                    {renderFieldDiff('deliveryProcess.naturalDelivery.totalLaborTime')}
+                  </div>
                 </div>
               </div>
             </div>
@@ -556,24 +964,63 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
                 <h4 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
                   <Baby className="w-4 h-4 text-pink-600" />
                   <span>三、寶寶情況 (Newborn Status)</span>
+                  {highlightDiff && (
+                    diffResult.diffList.filter((d) => d.section === '寶寶情況').length > 0 && (
+                      <span className="bg-amber-100 text-amber-900 border border-amber-300 text-[10.5px] font-bold px-1.5 py-0.2 rounded-full">
+                        {diffResult.diffList.filter((d) => d.section === '寶寶情況').length} 處修改
+                      </span>
+                    )
+                  )}
                 </h4>
                 <span className="text-[11px] text-slate-400">Apgar 計分與餵食狀況</span>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                <div><span className="text-slate-400 block">出生體重：</span><strong className="text-slate-800">{record.babyStatus?.weight ? `${record.babyStatus.weight} g` : '-'}</strong></div>
-                <div><span className="text-slate-400 block">出生身高：</span><strong className="text-slate-800">{record.babyStatus?.height ? `${record.babyStatus.height} cm` : '-'}</strong></div>
-                <div><span className="text-slate-400 block">Apgar 1 分鐘：</span><strong className="text-blue-700">{record.babyStatus?.apgar1Min || '-'} 分</strong></div>
-                <div><span className="text-slate-400 block">Apgar 5 分鐘：</span><strong className="text-emerald-700">{record.babyStatus?.apgar5Min || '-'} 分</strong></div>
-                <div><span className="text-slate-400 block">寶寶位置：</span><strong className="text-slate-800">{record.babyStatus?.location || '-'}</strong></div>
-                <div><span className="text-slate-400 block">哺餵方式：</span><strong className="text-slate-800">{record.babyStatus?.feedingType || '-'}</strong></div>
-                <div><span className="text-slate-400 block">今日奶量：</span><strong className="text-slate-800">{record.babyStatus?.dailyIntake || '-'}</strong></div>
+                <div className={getHighlightClass('babyStatus.weight')}>
+                  <span className="text-slate-400 block">出生體重：</span>
+                  <strong className="text-slate-800">{record.babyStatus?.weight ? `${record.babyStatus.weight} g` : '-'}</strong>
+                  {renderFieldDiff('babyStatus.weight')}
+                </div>
+                <div className={getHighlightClass('babyStatus.height')}>
+                  <span className="text-slate-400 block">出生身高：</span>
+                  <strong className="text-slate-800">{record.babyStatus?.height ? `${record.babyStatus.height} cm` : '-'}</strong>
+                  {renderFieldDiff('babyStatus.height')}
+                </div>
+                <div className={getHighlightClass('babyStatus.apgar1Min')}>
+                  <span className="text-slate-400 block">Apgar 1 分鐘：</span>
+                  <strong className="text-blue-700">{record.babyStatus?.apgar1Min || '-'} 分</strong>
+                  {renderFieldDiff('babyStatus.apgar1Min')}
+                </div>
+                <div className={getHighlightClass('babyStatus.apgar5Min')}>
+                  <span className="text-slate-400 block">Apgar 5 分鐘：</span>
+                  <strong className="text-emerald-700">{record.babyStatus?.apgar5Min || '-'} 分</strong>
+                  {renderFieldDiff('babyStatus.apgar5Min')}
+                </div>
+                <div className={getHighlightClass('babyStatus.location')}>
+                  <span className="text-slate-400 block">寶寶位置：</span>
+                  <strong className="text-slate-800">{record.babyStatus?.location || '-'}</strong>
+                  {renderFieldDiff('babyStatus.location')}
+                </div>
+                <div className={getHighlightClass('babyStatus.feedingType')}>
+                  <span className="text-slate-400 block">哺餵方式：</span>
+                  <strong className="text-slate-800">{record.babyStatus?.feedingType || '-'}</strong>
+                  {renderFieldDiff('babyStatus.feedingType')}
+                </div>
+                <div className={getHighlightClass('babyStatus.dailyIntake')}>
+                  <span className="text-slate-400 block">今日奶量：</span>
+                  <strong className="text-slate-800">{record.babyStatus?.dailyIntake || '-'}</strong>
+                  {renderFieldDiff('babyStatus.dailyIntake')}
+                </div>
               </div>
 
               {record.babyStatus?.specialConditions && (
-                <div className="text-xs p-2 bg-pink-50/60 rounded-lg text-pink-900 border border-pink-100">
-                  <span className="font-bold block">出生特殊情況或照護要點：</span>
+                <div className={`text-xs p-2 bg-pink-50/60 rounded-lg text-pink-900 border border-pink-100 ${getHighlightClass('babyStatus.specialConditions')}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold block">出生特殊情況或照護要點：</span>
+                    {renderDiffBadge('babyStatus.specialConditions')}
+                  </div>
                   <p className="mt-0.5">{record.babyStatus.specialConditions}</p>
+                  {renderFieldDiff('babyStatus.specialConditions')}
                 </div>
               )}
             </div>
@@ -584,6 +1031,14 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
                 <h4 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
                   <Heart className="w-4 h-4 text-rose-600" />
                   <span>四、產婦身心與傷口 REEDA 評估</span>
+                  {highlightDiff && (
+                    (diffResult.diffList.filter((d) => d.section === '產後身心').length +
+                     diffResult.diffList.filter((d) => d.section === '傷口REEDA').length) > 0 && (
+                      <span className="bg-amber-100 text-amber-900 border border-amber-300 text-[10.5px] font-bold px-1.5 py-0.2 rounded-full">
+                        {diffResult.diffList.filter((d) => d.section === '產後身心' || d.section === '傷口REEDA').length} 處修改
+                      </span>
+                    )
+                  )}
                 </h4>
                 <span className="text-[11px] text-slate-400">乳房、宮底高度、惡露量與傷口計分</span>
               </div>
@@ -592,26 +1047,57 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
                 {/* Breast & Uterus */}
                 <div className="p-3 bg-slate-50 rounded-lg space-y-2">
                   <span className="font-bold text-slate-700 block border-b border-slate-200 pb-1">乳房與宮底狀況：</span>
-                  <div><span className="text-slate-400">乳房質地/外觀:</span> <strong>{record.maternalAssessment?.breast?.consistency || '-'} / {record.maternalAssessment?.breast?.skinAppearance || '-'}</strong></div>
-                  <div><span className="text-slate-400">乳頭形狀/完整:</span> <strong>{record.maternalAssessment?.breast?.nippleShape || '-'} / {record.maternalAssessment?.breast?.nippleIntegrity || '-'}</strong></div>
-                  <div><span className="text-slate-400">宮底高度 (Fundus):</span> <strong className="text-blue-700">{record.maternalAssessment?.uterus?.fundalHeight || '-'}</strong></div>
-                  <div><span className="text-slate-400">宮縮硬度/位置:</span> <strong>{record.maternalAssessment?.uterus?.contraction || '-'} / {record.maternalAssessment?.uterus?.position || '-'}</strong></div>
-                  <div><span className="text-slate-400">惡露性質/顏色:</span> <strong className="text-rose-700">{record.maternalAssessment?.uterus?.lochiaType || '-'} ({record.maternalAssessment?.uterus?.lochiaColor || '-'}, {record.maternalAssessment?.uterus?.lochiaAmount || '-'})</strong></div>
+                  <div className={getHighlightClass('maternalAssessment.breast.consistency')}>
+                    <span className="text-slate-400">乳房質地/外觀:</span> <strong>{record.maternalAssessment?.breast?.consistency || '-'} / {record.maternalAssessment?.breast?.skinAppearance || '-'}</strong>
+                    {renderFieldDiff('maternalAssessment.breast.consistency')}
+                  </div>
+                  <div className={getHighlightClass('maternalAssessment.breast.nippleShape')}>
+                    <span className="text-slate-400">乳頭形狀/完整:</span> <strong>{record.maternalAssessment?.breast?.nippleShape || '-'} / {record.maternalAssessment?.breast?.nippleIntegrity || '-'}</strong>
+                    {renderFieldDiff('maternalAssessment.breast.nippleShape')}
+                  </div>
+                  <div className={getHighlightClass('maternalAssessment.uterus.fundalHeight')}>
+                    <span className="text-slate-400">宮底高度 (Fundus):</span> <strong className="text-blue-700">{record.maternalAssessment?.uterus?.fundalHeight || '-'}</strong>
+                    {renderFieldDiff('maternalAssessment.uterus.fundalHeight')}
+                  </div>
+                  <div className={getHighlightClass('maternalAssessment.uterus.contraction')}>
+                    <span className="text-slate-400">宮縮硬度/位置:</span> <strong>{record.maternalAssessment?.uterus?.contraction || '-'} / {record.maternalAssessment?.uterus?.position || '-'}</strong>
+                    {renderFieldDiff('maternalAssessment.uterus.contraction')}
+                  </div>
+                  <div className={getHighlightClass('maternalAssessment.uterus.lochia')}>
+                    <span className="text-slate-400">惡露性質/顏色:</span> <strong className="text-rose-700">{record.maternalAssessment?.uterus?.lochiaType || '-'} ({record.maternalAssessment?.uterus?.lochiaColor || '-'}, {record.maternalAssessment?.uterus?.lochiaAmount || '-'})</strong>
+                    {renderFieldDiff('maternalAssessment.uterus.lochia')}
+                  </div>
                 </div>
 
                 {/* REEDA / Wound */}
                 <div id="split-sec-wound" className="p-3 bg-rose-50/50 rounded-lg border border-rose-100 space-y-2">
                   <span className="font-bold text-rose-900 block border-b border-rose-200 pb-1">傷口臨床評估 (REEDA Scale)：</span>
                   <div className="grid grid-cols-2 gap-1.5">
-                    <div><span className="text-slate-500">Redness (紅):</span> <strong>{record.maternalAssessment?.wound?.perineal?.redness || '-'}</strong></div>
-                    <div><span className="text-slate-500">Edema (腫):</span> <strong>{record.maternalAssessment?.wound?.perineal?.edema || '-'}</strong></div>
-                    <div><span className="text-slate-500">Ecchymosis (瘀斑):</span> <strong>{record.maternalAssessment?.wound?.perineal?.ecchymosis || '-'}</strong></div>
-                    <div><span className="text-slate-500">Discharge (分泌物):</span> <strong>{record.maternalAssessment?.wound?.perineal?.discharge || '-'}</strong></div>
-                    <div><span className="text-slate-500">Approximation (近似):</span> <strong>{record.maternalAssessment?.wound?.perineal?.approximation || '-'}</strong></div>
+                    <div className={getHighlightClass('maternalAssessment.wound.perineal.redness')}>
+                      <span className="text-slate-500">Redness (紅):</span> <strong>{record.maternalAssessment?.wound?.perineal?.redness || '-'}</strong>
+                      {renderFieldDiff('maternalAssessment.wound.perineal.redness')}
+                    </div>
+                    <div className={getHighlightClass('maternalAssessment.wound.perineal.edema')}>
+                      <span className="text-slate-500">Edema (腫):</span> <strong>{record.maternalAssessment?.wound?.perineal?.edema || '-'}</strong>
+                      {renderFieldDiff('maternalAssessment.wound.perineal.edema')}
+                    </div>
+                    <div className={getHighlightClass('maternalAssessment.wound.perineal.ecchymosis')}>
+                      <span className="text-slate-500">Ecchymosis (瘀斑):</span> <strong>{record.maternalAssessment?.wound?.perineal?.ecchymosis || '-'}</strong>
+                      {renderFieldDiff('maternalAssessment.wound.perineal.ecchymosis')}
+                    </div>
+                    <div className={getHighlightClass('maternalAssessment.wound.perineal.discharge')}>
+                      <span className="text-slate-500">Discharge (分泌物):</span> <strong>{record.maternalAssessment?.wound?.perineal?.discharge || '-'}</strong>
+                      {renderFieldDiff('maternalAssessment.wound.perineal.discharge')}
+                    </div>
+                    <div className={getHighlightClass('maternalAssessment.wound.perineal.approximation')}>
+                      <span className="text-slate-500">Approximation (近似):</span> <strong>{record.maternalAssessment?.wound?.perineal?.approximation || '-'}</strong>
+                      {renderFieldDiff('maternalAssessment.wound.perineal.approximation')}
+                    </div>
                   </div>
                   {record.maternalAssessment?.wound?.cesarean?.pain && (
-                    <div className="text-[11px] text-slate-600 pt-1 border-t border-rose-100">
+                    <div className={`text-[11px] text-slate-600 pt-1 border-t border-rose-100 ${getHighlightClass('maternalAssessment.wound.cesarean.pain')}`}>
                       剖腹傷口疼痛: <strong>{record.maternalAssessment.wound.cesarean.pain}</strong> | 敷料: {record.maternalAssessment.wound.cesarean.dressing || '-'}
+                      {renderFieldDiff('maternalAssessment.wound.cesarean.pain')}
                     </div>
                   )}
                 </div>
@@ -619,14 +1105,17 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
             </div>
 
             {/* Section 6: Handover Notes */}
-            <div id="split-sec-handover" className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-2">
-              <h4 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
-                <ScrollText className="w-4 h-4 text-amber-600" />
-                <span>五、交班注意事項 (ISBAR Handover Notes)</span>
-              </h4>
-              <p className="p-3 bg-amber-50/40 rounded-lg text-xs text-slate-800 border border-amber-200/60 whitespace-pre-wrap leading-relaxed">
-                {record.handoverNotes || '（尚未填寫交班注意事項）'}
-              </p>
+            <div id="split-sec-handover" className={`bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-2 ${getHighlightClass('handoverNotes')}`}>
+              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                <h4 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
+                  <ScrollText className="w-4 h-4 text-amber-600" />
+                  <span>五、交班注意事項 (ISBAR Handover Notes)</span>
+                  {renderDiffBadge('handoverNotes')}
+                </h4>
+                <span className="text-[11px] text-slate-400">交接班臨床觀察重點</span>
+              </div>
+              
+              {renderTextDiffBlock('handoverNotes', record.handoverNotes, '（尚未填寫交班注意事項）')}
             </div>
 
             {/* Section 7: DART Nursing Notes */}
@@ -635,26 +1124,52 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
                 <h4 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
                   <FileText className="w-4 h-4 text-blue-600" />
                   <span>六、護理記錄 (DART Focus Charting)</span>
+                  {highlightDiff && (
+                    diffResult.diffList.filter((d) => d.section === 'DART護理記錄').length > 0 && (
+                      <span className="bg-amber-100 text-amber-900 border border-amber-300 text-[10.5px] font-bold px-1.5 py-0.2 rounded-full">
+                        {diffResult.diffList.filter((d) => d.section === 'DART護理記錄').length} 處修改
+                      </span>
+                    )
+                  )}
                 </h4>
-                <span className="text-xs text-slate-500">焦點：<strong className="text-blue-700">{record.nursingRecord?.focus || '未填寫'}</strong></span>
+                <div className="flex items-center gap-1 text-xs text-slate-500">
+                  <span>焦點：</span>
+                  <strong className="text-blue-700">{record.nursingRecord?.focus || '未填寫'}</strong>
+                  {renderDiffBadge('nursingRecord.focus')}
+                </div>
               </div>
 
               <div className="space-y-2.5 text-xs">
-                <div className="p-2.5 bg-slate-50 rounded-lg border-l-4 border-blue-500">
-                  <span className="font-bold text-blue-900 block mb-0.5">D (Data, 主客觀資料)：</span>
-                  <p className="text-slate-700 whitespace-pre-wrap">{record.nursingRecord?.data || '-'}</p>
+                <div className={`p-2.5 bg-slate-50 rounded-lg border-l-4 border-blue-500 ${getHighlightClass('nursingRecord.data')}`}>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="font-bold text-blue-900 block">D (Data, 主客觀資料)：</span>
+                    {renderDiffBadge('nursingRecord.data')}
+                  </div>
+                  {renderTextDiffBlock('nursingRecord.data', record.nursingRecord?.data, '-')}
                 </div>
-                <div className="p-2.5 bg-slate-50 rounded-lg border-l-4 border-emerald-500">
-                  <span className="font-bold text-emerald-900 block mb-0.5">A (Action, 護理行動措施)：</span>
-                  <p className="text-slate-700 whitespace-pre-wrap">{record.nursingRecord?.action || '-'}</p>
+
+                <div className={`p-2.5 bg-slate-50 rounded-lg border-l-4 border-emerald-500 ${getHighlightClass('nursingRecord.action')}`}>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="font-bold text-emerald-900 block">A (Action, 護理行動措施)：</span>
+                    {renderDiffBadge('nursingRecord.action')}
+                  </div>
+                  {renderTextDiffBlock('nursingRecord.action', record.nursingRecord?.action, '-')}
                 </div>
-                <div className="p-2.5 bg-slate-50 rounded-lg border-l-4 border-purple-500">
-                  <span className="font-bold text-purple-900 block mb-0.5">R (Response, 反應與成效評估)：</span>
-                  <p className="text-slate-700 whitespace-pre-wrap">{record.nursingRecord?.response || '-'}</p>
+
+                <div className={`p-2.5 bg-slate-50 rounded-lg border-l-4 border-purple-500 ${getHighlightClass('nursingRecord.response')}`}>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="font-bold text-purple-900 block">R (Response, 反應與成效評估)：</span>
+                    {renderDiffBadge('nursingRecord.response')}
+                  </div>
+                  {renderTextDiffBlock('nursingRecord.response', record.nursingRecord?.response, '-')}
                 </div>
-                <div className="p-2.5 bg-slate-50 rounded-lg border-l-4 border-amber-500">
-                  <span className="font-bold text-amber-900 block mb-0.5">T (Teaching, 衛教指導內容)：</span>
-                  <p className="text-slate-700 whitespace-pre-wrap">{record.nursingRecord?.teaching || '-'}</p>
+
+                <div className={`p-2.5 bg-slate-50 rounded-lg border-l-4 border-amber-500 ${getHighlightClass('nursingRecord.teaching')}`}>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="font-bold text-amber-900 block">T (Teaching, 衛教指導內容)：</span>
+                    {renderDiffBadge('nursingRecord.teaching')}
+                  </div>
+                  {renderTextDiffBlock('nursingRecord.teaching', record.nursingRecord?.teaching, '-')}
                 </div>
               </div>
             </div>
@@ -942,6 +1457,144 @@ export const SplitGradingView: React.FC<SplitGradingViewProps> = ({
         </div>
 
       </div>
+
+      {/* Difference Comparison Summary Modal Dialog */}
+      {showDiffModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+            {/* Modal Header */}
+            <div className="bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 text-white px-5 py-4 flex items-center justify-between shadow-xs">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-white/15 rounded-xl">
+                  <Sparkles className="w-5 h-5 text-amber-200" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-white flex items-center gap-2">
+                    <span>跨週次作業欄位修改差異對照清單</span>
+                    <span className="bg-amber-400 text-slate-900 text-xs px-2 py-0.5 rounded-full font-black">
+                      共 {diffResult.totalChanges} 處變更
+                    </span>
+                  </h3>
+                  <p className="text-xs text-amber-100/90 mt-0.5">
+                    正在比對：<strong>第 {weekNumber} 週 ({studentName})</strong> ↔ 對照基準：<strong>第 {baselineWeek} 週 ({baselineRecord?.internship?.studentName || '前次'})</strong>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDiffModal(false)}
+                className="p-1.5 text-white/80 hover:text-white hover:bg-white/20 rounded-lg transition-colors"
+                title="關閉視窗"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body - Diff List */}
+            <div className="p-5 overflow-y-auto flex-1 space-y-4">
+              {diffResult.totalChanges === 0 ? (
+                <div className="text-center py-10 text-slate-400">
+                  <CheckCircle2 className="w-10 h-10 mx-auto text-emerald-500 mb-2 opacity-80" />
+                  <p className="font-bold text-slate-700">兩份作業欄位內容完全相符</p>
+                  <p className="text-xs text-slate-500 mt-1">未發現數值或文字修改，可直接進行指導評語與成績核定。</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="text-xs text-slate-500 flex items-center justify-between">
+                    <span>下列依作業分段列出所有被修改或新增的欄位：</span>
+                    <span className="text-[11px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                      黃底帶刪除線為前次舊值，綠底粗體為本次新值
+                    </span>
+                  </div>
+
+                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
+                    {diffResult.diffList.map((item, index) => (
+                      <div key={item.fieldKey || index} className="p-3 bg-white hover:bg-amber-50/40 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-bold text-[11px]">
+                              {item.section}
+                            </span>
+                            <span className="font-extrabold text-slate-900 text-sm">
+                              {item.fieldLabel}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              ({item.fieldKey})
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pt-1">
+                            <div className="p-2 bg-rose-50/70 border border-rose-200/80 rounded-lg text-rose-900">
+                              <span className="text-[10px] font-bold text-rose-600 block mb-0.5">
+                                前次 (第 {baselineWeek} 週)：
+                              </span>
+                              <span className="line-through decoration-rose-500/80 font-medium whitespace-pre-wrap break-words">
+                                {item.oldValue || '（空值 / 未填寫）'}
+                              </span>
+                            </div>
+
+                            <div className="p-2 bg-emerald-50/80 border border-emerald-300 rounded-lg text-emerald-950">
+                              <span className="text-[10px] font-bold text-emerald-700 block mb-0.5">
+                                本次修訂 (第 {weekNumber} 週)：
+                              </span>
+                              <strong className="text-emerald-900 font-bold whitespace-pre-wrap break-words">
+                                {item.newValue || '（空值 / 未填寫）'}
+                              </strong>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Quick Jump Action */}
+                        <div className="sm:self-center shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowDiffModal(false);
+                              // Map section to anchor
+                              const sectionToAnchor: Record<string, string> = {
+                                '基本資料': 'basic',
+                                '入院評估': 'admission',
+                                '生產過程': 'delivery',
+                                '寶寶情況': 'baby',
+                                '產後身心': 'maternal',
+                                '傷口REEDA': 'wound',
+                                '交班事項': 'handover',
+                                'DART護理記錄': 'dart',
+                              };
+                              const anchor = sectionToAnchor[item.section];
+                              if (anchor) {
+                                scrollToLeftAnchor(anchor);
+                              }
+                            }}
+                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-xs transition-colors flex items-center gap-1 w-full sm:w-auto justify-center"
+                          >
+                            <span>跳轉至此欄</span>
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-slate-50 border-t border-slate-200 px-5 py-3 flex items-center justify-between text-xs">
+              <span className="text-slate-500">
+                提示：點擊「跳轉至此欄」可直接捲動至該欄位在表單中的位置
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowDiffModal(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl text-xs transition-colors"
+              >
+                關閉對照視窗
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Handwritten Signature Modal for Instructor */}
       <SignatureModal
